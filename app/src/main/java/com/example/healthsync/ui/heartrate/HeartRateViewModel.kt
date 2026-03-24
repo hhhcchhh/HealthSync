@@ -9,11 +9,13 @@ import com.example.healthsync.di.ApplicationScope
 import com.example.healthsync.domain.usecase.GetHealthSummaryUseCase
 import com.example.healthsync.domain.usecase.TriggerSyncUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -39,7 +41,7 @@ class HeartRateViewModel @Inject constructor(
     private val triggerSyncUseCase: TriggerSyncUseCase,
     private val simulatedSource: SimulatedBluetoothSource,
     private val syncCoordinator: SyncCoordinator,
-    @ApplicationScope private val appScope: CoroutineScope
+    @param:ApplicationScope private val appScope: CoroutineScope
 ) : ViewModel() {
 
     companion object {
@@ -48,10 +50,16 @@ class HeartRateViewModel @Inject constructor(
 
     private val _isRefreshing = MutableStateFlow(false)
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val recentHeartRatesFlow = getHealthSummaryUseCase
+        .getLatestHeartRate()
+        .flatMapLatest { latest ->
+            val anchorMs = latest?.timestamp ?: System.currentTimeMillis()
+            getHealthSummaryUseCase.getRecentHeartRates(anchorMs - FIVE_MINUTES_MS)
+        }
+
     private val dataFlows = combine(
-        getHealthSummaryUseCase.getRecentHeartRates(
-            System.currentTimeMillis() - FIVE_MINUTES_MS
-        ),
+        recentHeartRatesFlow,
         getHealthSummaryUseCase.getLatestHeartRate(),
         getHealthSummaryUseCase.getPendingSyncCount()
     ) { recent, latest, pendingCount ->

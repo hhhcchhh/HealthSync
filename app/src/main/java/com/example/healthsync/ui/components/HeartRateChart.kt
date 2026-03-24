@@ -12,6 +12,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import com.example.healthsync.ui.heartrate.ChartPoint
 
+private const val FIVE_MINUTES_MS = 5 * 60 * 1000L
+
 @Composable
 fun HeartRateChart(
     points: List<ChartPoint>,
@@ -55,13 +57,15 @@ fun HeartRateChart(
 
         // Important: don't convert epoch millis to Float (precision loss will collapse x positions).
         val sortedPoints = points.sortedBy { it.timestamp }
-        val minTimeMs = sortedPoints.first().timestamp
-        val maxTimeMs = sortedPoints.last().timestamp
-        val timeRangeMs = (maxTimeMs - minTimeMs).coerceAtLeast(1L).toFloat()
+        val windowEndMs = sortedPoints.last().timestamp
+        val windowStartMs = windowEndMs - FIVE_MINUTES_MS
+        val timeRangeMs = FIVE_MINUTES_MS.toFloat().coerceAtLeast(1f)
 
         val path = Path()
         sortedPoints.forEachIndexed { index, point ->
-            val x = ((point.timestamp - minTimeMs).toFloat() / timeRangeMs) * size.width
+            val x =
+                (((point.timestamp - windowStartMs).toFloat() / timeRangeMs) * size.width)
+                    .coerceIn(0f, size.width)
             val y =
                 (size.height * (1f - (point.bpm.toFloat() - minBpm) / bpmRange))
                     .coerceIn(0f, size.height)
@@ -72,7 +76,9 @@ fun HeartRateChart(
 
         // Latest point marker
         val last = sortedPoints.last()
-        val lastX = ((last.timestamp - minTimeMs).toFloat() / timeRangeMs) * size.width
+        val lastX =
+            (((last.timestamp - windowStartMs).toFloat() / timeRangeMs) * size.width)
+                .coerceIn(0f, size.width)
         val lastY =
             (size.height * (1f - (last.bpm.toFloat() - minBpm) / bpmRange))
                 .coerceIn(0f, size.height)
