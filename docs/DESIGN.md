@@ -41,6 +41,7 @@
 ### 2.2 依赖关系图（Mermaid）
 ```mermaid
 flowchart TD
+  %% 依赖方向：上层只依赖下层抽象；数据与状态以 Room 为事实来源
   UI[Compose_UI] --> VM[ViewModels]
   VM --> UC[UseCases]
   UC --> Repo[HealthRepository]
@@ -106,8 +107,11 @@ flowchart TD
 
 ```kotlin
 interface HealthDataSource {
+    // 数据事件流：数据源产生的所有健康事件都通过该流向外发送（Repository 订阅并落库）。
     val dataEvents: Flow<HealthEvent>
+    // 连接状态流：用于 UI 展示与同步/采集策略判断（例如断连时暂停产生数据）。
     val connectionState: Flow<ConnectionState>
+    // start/stop 约定：应当幂等；重复调用不应抛异常（便于恢复与重试场景）。
     suspend fun start()
     suspend fun stop()
 }
@@ -122,23 +126,23 @@ enum class ConnectionState {
 ```kotlin
 sealed class HealthEvent {
     data class HeartRateSample(
-        val timestamp: Long,
-        val bpm: Int,
-        val sourceId: String
+        val timestamp: Long, // ms 时间戳；统一使用 epoch millis 便于跨层传递与排序
+        val bpm: Int,        // 心率值（bpm）；范围校验可在数据源侧或写入用例侧完成
+        val sourceId: String // 数据来源标识；用于区分模拟蓝牙/手动输入/未来 Health Connect 等
     ) : HealthEvent()
 
     data class StepCountIncrement(
-        val timestamp: Long,
-        val steps: Int,
-        val sourceId: String
+        val timestamp: Long, // ms 时间戳；步数是增量事件（append-only）
+        val steps: Int,      // 本次增加的步数（增量而非累计）；便于离线合并与追溯
+        val sourceId: String // 数据来源标识
     ) : HealthEvent()
 
     data class SleepRecord(
-        val id: String,
-        val startTime: Long,
-        val endTime: Long,
-        val quality: SleepQuality,
-        val sourceId: String
+        val id: String,      // 业务主键（UUID）；离线创建时即可生成，避免与云端/其他设备冲突
+        val startTime: Long, // ms 时间戳
+        val endTime: Long,   // ms 时间戳；要求 endTime > startTime（由 UseCase/验证层保证）
+        val quality: SleepQuality, // 质量枚举；用于展示与冲突合并策略
+        val sourceId: String       // 数据来源标识（手动输入通常为固定值）
     ) : HealthEvent()
 }
 
@@ -146,6 +150,20 @@ enum class SleepQuality { POOR, FAIR, GOOD, EXCELLENT }
 ```
 
 所有数据源产生的事件统一为 `HealthEvent` 子类型，Repository 负责将其分发到对应的 DAO 写入。未来新增数据类型（如血氧）只需：新增 `HealthEvent` 子类 + 对应 Entity + DAO，不修改 `HealthDataSource` 接口。
+
+补充说明：SleepRecord 的 id / quality / sourceId
+
+### 1 为什么 SleepRecord 需要 id（而心率/步数事件不需要业务 id）
+- **睡眠记录是可编辑业务对象**：同一条记录会经历“创建 → 修改 → 同步 → 再修改”，需要稳定标识把多次更新关联到同一条记录，因此在事件模型中显式携带 `id`（UUID）。
+- **心率样本/步数增量是 append-only 事件**：每条都是不可变的新事件，不存在“更新同一条”的业务语义；本地入库时用 Room `autoGenerate` 主键即可，无需在事件模型中携带业务 id。
+
+### 2 SleepQuality 怎么用
+- **展示与统计**：UI 将 `POOR/FAIR/GOOD/EXCELLENT` 映射为文案/颜色/图标，并可做按天/周的质量分布与汇总指标。
+- **冲突解决（可合并字段之一）**：发生 409 冲突时，服务端版本会随 `serverSnapshot` 返回；解决冲突时需要在本地/远端/合并版本中确定 `quality` 的取值。
+
+### 3 sourceId 的作用
+- **标识数据来源**：区分模拟蓝牙、手动录入、未来 Health Connect/真实蓝牙等来源。
+- **便于过滤/分组与排障**：历史页可按来源筛选；同步失败或异常数据可快速定位是哪一路产生的；必要时也可对不同来源应用不同校验与策略。
 
 ### 4.3 数据源实现
 - **SimulatedBluetoothSource**
@@ -177,6 +195,7 @@ enum class SyncState {
 
 ```mermaid
 stateDiagram-v2
+    %% LOCAL_PENDING 是“outbox”语义：记录已落库但尚未与云端达成一致
     [*] --> LOCAL_PENDING: 数据写入
     LOCAL_PENDING --> SYNCING: SyncEngine抢占
     SYNCING --> SYNCED: 上传成功
@@ -247,6 +266,8 @@ stateDiagram-v2
   - 同步引擎"抢占任务"时使用 `@Transaction`，保证 `SELECT → UPDATE syncState` 的原子性
   - 两个数据源同时写入不同表时互不阻塞；写入同一表时 Room/SQLite 串行化保证不丢数据
 
+### 5.4 数据链路流转补充
+数据源实现产生 HealthEvent → Repository把事件转成 Entity 写入 Room → SyncEngine扫描 Entity 的状态字段上传云端并回写 → UI 订阅 Room 的 Flow 实时更新。
 ---
 
 ## 6. 同步引擎（SyncEngine）
@@ -256,11 +277,17 @@ stateDiagram-v2
 采用 **WorkManager 周期任务 + 手动触发** 双轨机制：
 
 - **WorkManager PeriodicWorkRequest**：每 15 分钟（WorkManager 最小周期）执行一次同步扫描。使用 `@HiltWorker` 注入依赖。即使 App 被杀，系统也会按计划唤起 Worker 执行同步。
-- **App 内协程轮询**：App 在前台时，`SyncEngine` 通过 `applicationScope` 启动协程，每 30 秒扫描一次待同步记录，提供比 WorkManager 更及时的同步体验。
+- **App 内前台推进（推荐）**：App 在前台时，`SyncEngine` 通过 `applicationScope` 启动一个“持续推进循环”，反复执行“扫描→抢占→上传→回写”，直到当前没有可同步记录为止；若仅剩记录的 `nextAttemptAt` 尚未到达，则 `delay()` 到最近的 `nextAttemptAt` 再继续（可设置上限，例如最多等待 30s，以避免长时间挂起）。
+  - 这样可以让 `RetryPolicy` 的 2s/4s/8s 级别退避在前台真正生效，而不会被固定 30s 轮询粒度吞掉。
+  - App 退到后台时停止该循环，避免持续唤醒；后台由 WorkManager 周期任务兜底。
 - **手动刷新**：历史页下拉刷新、UI 按钮触发一次即时同步。
 - **启动恢复**：Application.onCreate 时调用 `SyncEngine.recover()`，将停留在 `SYNCING` 状态的记录重置为 `LOCAL_PENDING`（保留 `attemptCount`），然后立即触发一轮同步扫描。
 
 > 为什么双轨：WorkManager 保证进程被杀后仍能恢复同步，但最小周期 15 分钟对前台实时体验不够；协程轮询在前台提供快速响应，两者互补。
+
+> 补充说明：`nextAttemptAt` 是“最早允许重试时间（not-before）”，并不保证到点立刻执行；若采用固定间隔扫描，实际重试会被扫描粒度量化。前台持续推进循环通过“对齐最近 nextAttemptAt”能避免这一问题。
+
+> 并发补充：前台持续推进循环、WorkManager Worker、手动刷新、启动恢复等都可能触发同步。为避免重复处理同一条记录，抢占阶段必须在事务中将记录原子标记为 `SYNCING`（见 6.2 第 2 步），其他执行者抢占失败则跳过该记录。为减少资源浪费，在 `SyncEngine` 内增加“进程内单实例运行锁”（例如 Mutex/atomic flag）：当同步已在运行时，新触发只做唤醒/加速而不再启动第二个循环；同时 WorkManager 使用 UniqueWork 避免重复排程。
 
 ### 6.2 同步流程（高层）
 1. 查询待同步记录：`syncState in (LOCAL_PENDING, SYNC_FAILED)` 且 `nextAttemptAt <= now`
@@ -280,11 +307,14 @@ class RetryPolicy(
     val maxDelayMs: Long = 30_000L
 ) {
     fun nextDelay(attemptCount: Int): Long {
+        // attemptCount 从 0 开始：0->~2s，1->~4s，2->~8s...（指数退避）
         val delay = baseDelayMs * (1L shl attemptCount) // 2^n
+        // jitter 用来打散同一时刻的重试，避免“惊群效应”
         val jitter = (delay * 0.1 * Random.nextDouble()).toLong()
         return (delay + jitter).coerceAtMost(maxDelayMs)
     }
 
+    // 达到上限后由 SyncEngine 将记录置为 SYNC_FAILED（不再自动重试）
     fun shouldRetry(attemptCount: Int): Boolean = attemptCount < maxAttempts
 }
 ```
@@ -326,6 +356,64 @@ class RetryPolicy(
 - **缺点**：需要额外状态与解决入口，实现与测试更复杂
 - **对比 LWW**：LWW 实现简单但会静默丢弃一方修改；对于心率/步数这类 append-only 数据可以用 LWW（实际上不会冲突），但睡眠记录必须用更安全的策略
 
+### 7.4 其他可选冲突解决策略（补充）
+
+> 说明：这些策略并非互斥；常见做法是“默认策略 + 兜底人工介入”，或按字段/场景选择不同策略。
+
+- **策略 A：LWW（Last Write Wins，最后写入覆盖）**
+  - **变体**：服务端优先（Server-wins）/ 客户端优先（Client-wins）/ 基于时间戳或版本号的最后者胜出
+  - **优点**：实现最简单；无需额外冲突状态与 UI
+  - **缺点**：会静默丢弃一方修改；对“用户手动编辑”的睡眠记录不友好（信任问题）
+  - **适用**：append-only 或“可容忍覆盖”的数据（例如某些统计/缓存/可再生数据）
+
+- **策略 B：三方合并（3-way merge）**
+  - **做法**：用 `base`（编辑时看到的云端版本）+ `local`（本地修改后）+ `remote`（当前云端）做合并，类似 git merge
+  - **优点**：理论上可自动合并非重叠修改，减少人工介入
+  - **缺点**：需要维护 base 快照/补丁；合并规则复杂、测试成本高；仍可能产生无法自动合并的冲突
+  - **适用**：字段多、修改频繁，且“自动合并价值高”的记录
+
+- **策略 C：字段级合并（rule-based merge）**
+  - **做法**：按字段定义规则，例如：
+    - `startTime/endTime` 采用更“可信”的来源或更合理区间
+    - `quality` 优先保留用户手动输入（若 `sourceId` 标记为 Manual）
+  - **优点**：比 LWW 更安全；比通用 3-way merge 更可控
+  - **缺点**：规则容易隐含业务偏见；规则变更需要迁移/回溯；仍需兜底冲突状态
+  - **适用**：字段语义清晰、可制定明确优先级的场景
+
+- **策略 D：保留双方 + 人工选择（UI 介入）**
+  - **做法**：保存 local/remote 两份，展示差异，让用户选择“保留本地/保留云端/手动编辑后再同步”
+  - **优点**：最符合“不丢数据/可审计”；用户掌控感强
+  - **缺点**：需要 UI 与交互；对用户有负担（需要理解差异）
+  - **适用**：高价值、用户强感知的记录（如睡眠手动编辑、医疗相关数据）
+
+- **策略 E：CRDT/可交换合并（高级）**
+  - **做法**：将数据结构设计成可并发合并（如集合/计数器等 CRDT），无需显式冲突
+  - **优点**：理论上可以“天然离线合并”，最终一致性好
+  - **缺点**：数据模型需要为 CRDT 重新设计；实现/验证成本高；并不适合所有字段（时间区间类数据较难）
+  - **适用**：协作编辑、集合型数据、计数器等天然可交换场景
+
+#### 7.4.1 CRDT/可交换合并（高级）详解
+
+CRDT（Conflict-free Replicated Data Type，无冲突可复制数据类型）是一类数据结构/数据建模方式，使多个副本在**离线并发更新**后，可以通过 `merge`（合并）在不需要“检测冲突→人工选择”的情况下收敛到一致结果。它依赖三个关键性质：
+
+- **可交换（Commutative）**：先合并 A 再合并 B 与先合并 B 再合并 A 结果相同
+- **可结合（Associative）**：\((A ⊔ B) ⊔ C = A ⊔ (B ⊔ C)\)
+- **幂等（Idempotent）**：重复合并同一份更新不会改变最终结果（对乱序/重复投递非常友好）
+
+常见 CRDT 同步形态：
+- **Op-based（操作型）**：同步的是“操作日志”（例如 `add(x)`、`remove(x)`、`inc(1)`）。通常需要 `opId` 去重，保证重复投递不重复生效。
+- **State-based（状态型）**：同步的是“可合并状态”，合并规则需要天然满足交换/结合/幂等（实现简单但状态可能更大）。
+- **Delta-state（增量状态）**：只同步状态增量（折中方案，常用于移动端降流量）。
+
+常见 CRDT 类型（直觉理解）：
+- **计数器（Counter：G-Counter/PN-Counter）**：适合“累计值”的离线合并（例如按设备维度分量计数，合并取 max/求和）。
+- **集合（Set：G-Set/OR-Set）**：适合“元素增删”的离线合并（OR-Set 通过唯一 tag 解决并发 add/remove 的歧义）。
+- **寄存器（Register：LWW-Register 等）**：可视为“规则化的覆盖”，实现简单但会丢一方信息（更像把冲突变成确定规则）。
+
+与本设计的关系与适用性：
+- **更适合**：步数这类“可交换聚合/累计”的数据（如果把步数建模为“今日累计”而非增量事件），或事件集合的“去重合并”（append-only 事件可用唯一 id 做幂等集合）。
+- **不太适合**：睡眠记录这类“语义强的时间区间对象”（`startTime/endTime/quality`）。这些字段很难定义一个普适且符合用户预期的 `merge`；若强行 CRDT 化，往往需要重构业务模型（例如拆成可合并片段集合）或退回到“字段级规则 + 人工兜底”。
+
 ---
 
 ## 8. Mock Cloud API 合约
@@ -344,6 +432,8 @@ class RetryPolicy(
 **正常上传**：
 
 ```
+// 示例意图：客户端带着 baseRemoteVersion 做“条件更新”（类似乐观锁）。
+// 期望结果：服务端接受写入并返回最新 remoteVersion，客户端据此回写本地 remoteVersion。
 PUT /api/sleep-records/uuid-123
 Request:
 {
@@ -363,6 +453,8 @@ Response 200:
 **版本冲突**：
 
 ```
+// 示例意图：当服务端发现 baseRemoteVersion 落后于当前版本时，返回 409 并附带服务端当前数据。
+// 客户端处理：将本地记录置为 CONFLICT，并把 serverData 保存到 serverSnapshot 以便后续解决。
 Response 409:
 {
   "error": "VERSION_CONFLICT",
@@ -402,6 +494,7 @@ Response 409:
 
 ```mermaid
 sequenceDiagram
+    %% 意图：展示“数据产生→落库→UI响应式展示→同步引擎推进状态→回写数据库”的端到端闭环
     participant BT as SimulatedBTSource
     participant Repo as HealthRepository
     participant DB as Room_Database
@@ -508,6 +601,7 @@ sequenceDiagram
 ## 13. 目录结构
 
 ```
+# 约定：目录按 UI / domain / data 分层；新增数据源或策略时优先“新增实现+DI 注册”，避免修改核心同步引擎代码。
 app/src/main/java/com/healthsync/
 ├── di/                          # Hilt modules
 │   ├── DataSourceModule.kt
@@ -532,7 +626,9 @@ app/src/main/java/com/healthsync/
 │   │   └── MockCloudApi.kt
 │   ├── sync/                    # 同步引擎
 │   │   ├── SyncEngine.kt
+│   │   ├── SyncCoordinator.kt   # 进程内单实例运行锁/触发合并；前台持续推进循环在此或 SyncEngine 内实现
 │   │   ├── SyncWorker.kt
+│   │   ├── SyncWorkScheduler.kt # UniquePeriodicWork 的调度封装（可由 Application/UseCase 调用）
 │   │   ├── RetryPolicy.kt
 │   │   └── ConflictResolver.kt
 │   └── repository/
@@ -558,4 +654,11 @@ app/src/main/java/com/healthsync/
         ├── HeartRateChart.kt     # Canvas 折线图
         ├── StepRingProgress.kt   # Canvas 环形进度条
         └── SyncStatusBadge.kt    # 同步状态指示
+
+# 测试建议放置（与 12.2 的 fake/虚拟时间约束对应）
+app/src/test/java/com/healthsync/
+└── testutils/
+    ├── FakeMockCloudApi.kt       # 可配置成功/失败/409/延迟
+    ├── TestDispatchers.kt        # 统一注入 TestDispatcher/TestScope
+    └── InMemoryDbFactory.kt      # Room.inMemoryDatabaseBuilder 创建与清理
 ```
