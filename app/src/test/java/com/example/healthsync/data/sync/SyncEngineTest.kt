@@ -36,7 +36,7 @@ class SyncEngineTest {
             maxDelayMs = 0
         }
         retryPolicy = RetryPolicy()
-        syncEngine = SyncEngine(heartRateDao, stepCountDao, cloudApi, retryPolicy)
+        syncEngine = SyncEngine(heartRateDao, stepCountDao, cloudApi, retryPolicy, NoopSyncLogger)
     }
 
     // ── Normal flow: LOCAL_PENDING → SYNCING → SYNCED ──

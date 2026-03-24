@@ -1,6 +1,5 @@
 package com.example.healthsync.data.sync
 
-import android.util.Log
 import com.example.healthsync.data.local.dao.HeartRateDao
 import com.example.healthsync.data.local.dao.StepCountDao
 import com.example.healthsync.data.local.entity.SyncState
@@ -15,7 +14,8 @@ class SyncEngine @Inject constructor(
     private val heartRateDao: HeartRateDao,
     private val stepCountDao: StepCountDao,
     private val cloudApi: MockCloudApi,
-    private val retryPolicy: RetryPolicy
+    private val retryPolicy: RetryPolicy,
+    private val logger: SyncLogger
 ) {
     companion object {
         private const val TAG = "SyncEngine"
@@ -42,7 +42,7 @@ class SyncEngine @Inject constructor(
     suspend fun recover() {
         val hrReset = heartRateDao.resetSyncingToLocal()
         val scReset = stepCountDao.resetSyncingToLocal()
-        Log.i(TAG, "recover: reset $hrReset heart-rate, $scReset step-count records")
+        logger.i(TAG, "recover: reset $hrReset heart-rate, $scReset step-count records")
     }
 
     /**
@@ -90,9 +90,9 @@ class SyncEngine @Inject constructor(
                     heartRateDao.markSynced(record.id, result.remoteId)
                 }
             }
-            Log.d(TAG, "syncHeartRates: ${pending.size} records synced")
+            logger.d(TAG, "syncHeartRates: ${pending.size} records synced")
         } catch (e: Exception) {
-            Log.w(TAG, "syncHeartRates failed: ${e.message}")
+            logger.w(TAG, "syncHeartRates failed: ${e.message}", e)
             val errorMsg = e.message ?: "Unknown error"
             pending.forEach { record ->
                 handleHeartRateFailure(record.id, record.attemptCount, errorMsg)
@@ -129,9 +129,9 @@ class SyncEngine @Inject constructor(
                     stepCountDao.markSynced(record.id, result.remoteId)
                 }
             }
-            Log.d(TAG, "syncStepCounts: ${pending.size} records synced")
+            logger.d(TAG, "syncStepCounts: ${pending.size} records synced")
         } catch (e: Exception) {
-            Log.w(TAG, "syncStepCounts failed: ${e.message}")
+            logger.w(TAG, "syncStepCounts failed: ${e.message}", e)
             val errorMsg = e.message ?: "Unknown error"
             pending.forEach { record ->
                 handleStepCountFailure(record.id, record.attemptCount, errorMsg)

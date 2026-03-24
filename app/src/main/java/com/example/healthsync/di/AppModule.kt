@@ -1,6 +1,8 @@
 package com.example.healthsync.di
 
 import com.google.gson.Gson
+import com.example.healthsync.data.sync.AndroidSyncLogger
+import com.example.healthsync.data.sync.SyncLogger
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -29,4 +31,8 @@ object AppModule {
     @Provides
     @Singleton
     fun provideGson(): Gson = Gson()
+
+    @Provides
+    @Singleton
+    fun provideSyncLogger(): SyncLogger = AndroidSyncLogger()
 }

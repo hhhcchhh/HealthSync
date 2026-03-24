@@ -32,8 +32,8 @@ class SyncCoordinatorTest {
             minDelayMs = 0
             maxDelayMs = 0
         }
-        syncEngine = SyncEngine(heartRateDao, stepCountDao, cloudApi, RetryPolicy())
-        coordinator = SyncCoordinator(syncEngine)
+        syncEngine = SyncEngine(heartRateDao, stepCountDao, cloudApi, RetryPolicy(), NoopSyncLogger)
+        coordinator = SyncCoordinator(syncEngine, NoopSyncLogger)
     }
 
     @Test

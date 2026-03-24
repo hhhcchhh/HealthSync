@@ -1,6 +1,5 @@
 package com.example.healthsync.data.sync
 
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -14,7 +13,8 @@ import javax.inject.Singleton
 
 @Singleton
 class SyncCoordinator @Inject constructor(
-    private val syncEngine: SyncEngine
+    private val syncEngine: SyncEngine,
+    private val logger: SyncLogger
 ) {
     companion object {
         private const val TAG = "SyncCoordinator"
@@ -35,11 +35,11 @@ class SyncCoordinator @Inject constructor(
      */
     fun startForegroundLoop(scope: CoroutineScope) {
         if (foregroundJob?.isActive == true) {
-            Log.d(TAG, "foreground loop already running, skip")
+            logger.d(TAG, "foreground loop already running, skip")
             return
         }
         foregroundJob = scope.launch {
-            Log.i(TAG, "foreground sync loop started")
+            logger.i(TAG, "foreground sync loop started")
             while (true) {
                 val didWork = runSyncPass()
                 if (!didWork) {
@@ -59,7 +59,7 @@ class SyncCoordinator @Inject constructor(
     fun stopForegroundLoop() {
         foregroundJob?.cancel()
         foregroundJob = null
-        Log.i(TAG, "foreground sync loop stopped")
+        logger.i(TAG, "foreground sync loop stopped")
     }
 
     /**
@@ -79,7 +79,7 @@ class SyncCoordinator @Inject constructor(
 
     private suspend fun runSyncPass(): Boolean {
         if (!mutex.tryLock()) {
-            Log.d(TAG, "sync already in progress, skipping")
+            logger.d(TAG, "sync already in progress, skipping")
             return false
         }
         return try {
