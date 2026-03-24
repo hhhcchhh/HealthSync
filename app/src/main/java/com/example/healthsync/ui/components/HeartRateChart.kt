@@ -53,23 +53,29 @@ fun HeartRateChart(
 
         if (points.size < 2) return@Canvas
 
-        val minTime = points.first().timestamp.toFloat()
-        val maxTime = points.last().timestamp.toFloat()
-        val timeRange = (maxTime - minTime).coerceAtLeast(1f)
+        // Important: don't convert epoch millis to Float (precision loss will collapse x positions).
+        val sortedPoints = points.sortedBy { it.timestamp }
+        val minTimeMs = sortedPoints.first().timestamp
+        val maxTimeMs = sortedPoints.last().timestamp
+        val timeRangeMs = (maxTimeMs - minTimeMs).coerceAtLeast(1L).toFloat()
 
         val path = Path()
-        points.forEachIndexed { index, point ->
-            val x = ((point.timestamp - minTime) / timeRange) * size.width
-            val y = size.height * (1f - (point.bpm.toFloat() - minBpm) / bpmRange)
+        sortedPoints.forEachIndexed { index, point ->
+            val x = ((point.timestamp - minTimeMs).toFloat() / timeRangeMs) * size.width
+            val y =
+                (size.height * (1f - (point.bpm.toFloat() - minBpm) / bpmRange))
+                    .coerceIn(0f, size.height)
             if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
 
         drawPath(path, lineColor, style = Stroke(width = 3f))
 
         // Latest point marker
-        val last = points.last()
-        val lastX = size.width
-        val lastY = size.height * (1f - (last.bpm.toFloat() - minBpm) / bpmRange)
+        val last = sortedPoints.last()
+        val lastX = ((last.timestamp - minTimeMs).toFloat() / timeRangeMs) * size.width
+        val lastY =
+            (size.height * (1f - (last.bpm.toFloat() - minBpm) / bpmRange))
+                .coerceIn(0f, size.height)
         drawCircle(lineColor, radius = 6f, center = Offset(lastX, lastY))
     }
 }
