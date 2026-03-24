@@ -175,6 +175,33 @@ enum class SleepQuality { POOR, FAIR, GOOD, EXCELLENT }
   - `connectionState` 始终为 `CONNECTED`（手动输入不依赖外部连接）
   - 必须能在离线状态下修改"已同步"的记录，以触发冲突链路
 
+### 4.4 扩展性补充：避免“新增数据类型就要改 Repository/SyncEngine”
+
+#### 4.4.1 问题
+虽然 `HealthDataSource` 接口不需要修改，但若 Repository 用 `when(event)` 分发入库、SyncEngine 逐表扫描并调用不同 endpoint，则每新增一种数据类型（如血氧）仍要修改旧代码（Repository/SyncEngine），不符合“未来扩展不修改现有代码”的目标。
+
+#### 4.4.2 方案：用 DI 注册 EventHandler/SyncAdapter（新增类型只加实现 + 绑定）
+引入两类可插拔组件，交由依赖注入（Hilt multibinding）管理：
+- `EventHandler`：负责把某类 `HealthEvent` 落库（含校验、映射、DAO 写入）
+- `SyncAdapter`：负责从本地查询待同步记录、执行上传、回写同步结果（含批量策略）
+
+Repository 只做两件事：
+1. 收集所有 DataSource 的 `dataEvents`，交给已注册的 `EventHandler` 链处理（谁能处理谁消费）
+2. 提供统一的查询 Flow（各表 DAO 仍可独立暴露给 ViewModel/UseCase）
+
+SyncEngine 只做两件事：
+1. 遍历所有已注册的 `SyncAdapter`，按其策略拉取“可同步任务”（`nextAttemptAt <= now`）
+2. 统一执行“事务抢占 → 上传 → 回写状态/重试计划”的流程骨架，但具体数据类型的序列化与 API 调用封装在各自 Adapter 内
+
+扩展方式：
+- 新增数据类型（例如 BloodOxygen）时，只新增：
+  - `HealthEvent.BloodOxygenSample`
+  - `BloodOxygenEntity/Dao`
+  - `BloodOxygenEventHandler`
+  - `BloodOxygenSyncAdapter`
+  - Hilt 绑定（multibinding）
+- 不修改现有 Repository/SyncEngine 核心代码
+
 ---
 
 ## 5. 本地数据模型与同步状态机
@@ -326,8 +353,53 @@ class RetryPolicy(
 
 启动恢复时处理 `SYNCING` 状态的记录：
 - **策略**：`Application.onCreate` → `SyncEngine.recover()` 将所有 `syncState == SYNCING` 的记录重置为 `LOCAL_PENDING`，保留 `attemptCount`。
-- **原因**：应用被杀时无法确认上传是否已到达服务端；回到 `LOCAL_PENDING` 让同步引擎重新推进。配合 `remoteId` 幂等性，即使服务端已收到，重复上传也不会产生副作用。
+- **原因**：应用被杀时无法确认上传是否已到达服务端；回到 `LOCAL_PENDING` 让同步引擎重新推进。为避免“重放”导致云端重复数据，需要接口与数据模型具备幂等/去重能力（见 6.5）。
 - **WorkManager 兜底**：即使 App 未被用户重新打开，WorkManager 的周期任务也会执行恢复 + 同步。
+
+## 6.5 幂等性与去重（防止重放导致云端重复数据）
+
+### 6.5.1 为什么必须做幂等/去重
+在离线优先系统里，以下情况会导致“同一批数据被重复上传（重放）”：
+- 网络抖动导致客户端重试，但服务端其实已收到（客户端未拿到响应）
+- 同步过程中 App 被杀，启动恢复（recover）把 `SYNCING` 重置回 `LOCAL_PENDING`，下一轮同步会再次尝试上传
+- WorkManager 与前台同步循环交替触发，可能产生重复提交（即使本地通过事务抢占避免“同一条记录并发上传”，仍可能出现“先上传成功但未回写 SYNCED 就被杀”导致的重放）
+
+若云端接口是“追加写入（append）”语义（如 POST 批量上传），则重放会导致云端重复插入，最终造成：
+- 心率样本数量膨胀（图表点数异常）
+- 步数被重复累计（今日步数虚高）
+因此必须在设计上保证“重复上传不会改变最终结果”，即幂等（或至少可去重）。
+
+### 6.5.2 方案选择：客户端生成 eventId + 服务端按 eventId 去重（推荐）
+对 HeartRate 与 StepCount 这类 append-only 事件，引入稳定事件标识 `eventId`：
+- 客户端在落库时生成 `eventId = UUID`
+- 本地 Room 表增加字段 `eventId`，并建立唯一索引，避免本地重复写入
+- 云端存储按 `eventId` 去重：同一 `eventId` 重复上报时，服务端返回 200/208（或 200 + same remoteId），但不重复插入
+- 同步成功回写 `remoteId` 仅作为调试/追踪字段；幂等性的关键是 `eventId`
+
+API 合约调整建议：
+- `POST /api/heart-rates` 与 `POST /api/step-counts` 的每条 item 均包含 `eventId`
+- 服务端对 batch 中已存在的 `eventId` 直接忽略或返回“已存在”，整体请求仍视为成功（幂等）
+
+> 说明：SleepRecord 本身使用业务主键 `id`（UUID）+ `PUT` 语义，天然更接近幂等；心率/步数必须额外引入 `eventId` 或其他去重键。
+
+## 6.6 attemptCount 口径与“最多 3 次”的严格定义（用于实现与测试一致）
+
+为避免实现与测试对“最多 3 次重试”理解不一致，统一如下定义：
+- `attemptCount` 表示“已发生的失败次数（failures so far）”，初始为 0
+- 每次上传失败（非 409 冲突）后：`attemptCount += 1`
+- 当 `attemptCount >= 3` 时：该记录进入 `SYNC_FAILED`，停止自动重试
+- 指数退避 delay 使用失败前的 attemptCount 计算下一次间隔（第 1 次失败后等待约 2s，第 2 次约 4s，第 3 次约 8s，但随后因超限直接置为 `SYNC_FAILED`）
+
+示例表（now 为失败发生时间点）：
+
+| 事件 | attemptCount（更新后） | nextAttemptAt |
+|---|---:|---|
+| 初始待同步 | 0 | now |
+| 第 1 次失败 | 1 | now + ~2s |
+| 第 2 次失败 | 2 | now + ~4s |
+| 第 3 次失败 | 3 | 不再调度；置为 `SYNC_FAILED` |
+
+> 说明：如果实现选择用“尝试次数（attempts so far）”口径也可以，但必须把状态转换与测试用例全部按同一口径重写；本设计选择“失败次数”以便直观表达“失败满 3 次即失败”。
 
 ---
 
