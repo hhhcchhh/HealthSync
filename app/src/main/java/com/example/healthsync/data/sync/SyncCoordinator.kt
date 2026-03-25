@@ -11,6 +11,13 @@ import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 同步触发与并发治理（Milestone 3，DESIGN §6.1）：
+ *
+ * - **Mutex**：进程内单实例，避免 WorkManager / 下拉刷新 / 前台循环并行重复跑同一批上传
+ * - **前台循环**：`syncOnce` 直到无活可干，再按最近 `nextAttemptAt` delay（上限 30s），使 2s/4s/8s 退避不被粗粒度轮询吃掉
+ * - [triggerSync]：手动刷新与 Worker 共用入口
+ */
 @Singleton
 class SyncCoordinator @Inject constructor(
     private val syncEngine: SyncEngine,

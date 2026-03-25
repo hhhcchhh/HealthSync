@@ -10,6 +10,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
 
+/**
+ * 模拟蓝牙数据源实现（Milestone 1/4，DESIGN §4.3）。
+ *
+ * 每 2 秒发出一个心率采样（55-125 bpm）、每 30 秒发出一个步数增量（1-20 步）。
+ * 支持模拟断连/重连，用于测试 UI 降级与重连逻辑（Milestone 4）。
+ */
 @Singleton
 class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
 
@@ -29,6 +35,11 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
 
     private var disconnectEnabled = true
 
+    /**
+     * 数据事件流实现：每 2s 发一个心率，每 30s 发一个步数增量。
+     * 当 connectionState 非 CONNECTED 时，暂停产生数据（模拟蓝牙断连行为）。
+     * 每 60s 自动触发一次模拟断连/重连周期，以验证 UI 降级与恢复能力。
+     */
     override val dataEvents: Flow<HealthEvent> = flow {
         var heartRateCounter = 0L
         var stepCounter = 0L
@@ -66,6 +77,7 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
                 )
             }
 
+            // 每 60s 自动模拟一次断连/重连周期，用于验证异常场景（Milestone 4）
             if (disconnectEnabled && totalElapsed >= DISCONNECT_AFTER_MS) {
                 simulateDisconnect()
                 totalElapsed = 0
@@ -73,17 +85,27 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
         }
     }
 
+    /**
+     * 启动数据采集。幂等实现，重复调用不抛异常。
+     */
     override suspend fun start() {
         if (running) return
         running = true
         _connectionState.value = ConnectionState.CONNECTED
     }
 
+    /**
+     * 停止数据采集。幂等实现。
+     */
     override suspend fun stop() {
         running = false
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 
+    /**
+     * 模拟蓝牙断连：切换为 DISCONNECTED，延迟后切为 RECONNECTING，再延迟后恢复 CONNECTED。
+     * 用于验证 UI 在设备断连时的降级展示与自动恢复能力（Milestone 4）。
+     */
     private suspend fun simulateDisconnect() {
         _connectionState.value = ConnectionState.DISCONNECTED
         delay(DISCONNECT_DURATION_MS / 2)

@@ -41,6 +41,21 @@ import com.example.healthsync.data.source.ConnectionState
 import com.example.healthsync.ui.components.HeartRateChart
 import com.example.healthsync.ui.components.SyncStatusBadge
 
+/**
+ * 心率主屏幕（Milestone 1/3/6）。
+ *
+ * 100% Compose UI，展示：
+ * - 当前心率（大字），异常时变色提示
+ * - 最近 5 分钟折线图
+ * - 同步状态 badge
+ * - 连接状态 banner（断连时显示）
+ * - 下拉刷新
+ *
+ * 核心交互：
+ * - 进入时启动前台同步循环（startForegroundSync）
+ * - 离开时停止循环（stopForegroundSync）
+ * - 下拉刷新触发一次同步
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HeartRateScreen(
@@ -49,11 +64,13 @@ fun HeartRateScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // 进/出屏幕时管理前台同步循环生命周期
     DisposableEffect(Unit) {
         viewModel.startForegroundSync()
         onDispose { viewModel.stopForegroundSync() }
     }
 
+    // 监听连接状态变化，显示提示信息
     LaunchedEffect(state.connectionState) {
         if (state.connectionState == ConnectionState.DISCONNECTED) {
             snackbarHostState.showSnackbar("设备已断开连接")
@@ -67,6 +84,7 @@ fun HeartRateScreen(
             TopAppBar(
                 title = { Text("HealthSync") },
                 actions = {
+                    // TopAppBar 中的同步状态 badge
                     SyncStatusBadge(
                         pendingCount = state.pendingSyncCount,
                         isSyncing = state.isSyncing,
@@ -77,6 +95,7 @@ fun HeartRateScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
+        // 下拉刷新容器
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.onRefresh() },
@@ -91,10 +110,12 @@ fun HeartRateScreen(
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // 连接状态提示 banner
                 ConnectionBanner(state.connectionState)
 
                 Spacer(Modifier.height(24.dp))
 
+                // 当前心率大字显示，异常时变色
                 HeartRateDisplay(
                     bpm = state.currentBpm,
                     isAbnormal = state.isAbnormal
@@ -102,6 +123,7 @@ fun HeartRateScreen(
 
                 Spacer(Modifier.height(24.dp))
 
+                // 最近 5 分钟折线图卡片
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -121,6 +143,7 @@ fun HeartRateScreen(
 
                 Spacer(Modifier.height(16.dp))
 
+                // 同步状态总结卡片
                 SyncSummaryCard(
                     pendingCount = state.pendingSyncCount,
                     isSyncing = state.isSyncing
@@ -130,13 +153,17 @@ fun HeartRateScreen(
     }
 }
 
+/**
+ * 心率大字显示组件。
+ * 当 BPM > 100 或 < 60 时，数值与单位文本变为对应的警告色。
+ */
 @Composable
 private fun HeartRateDisplay(bpm: Int?, isAbnormal: Boolean) {
     val bpmColor by animateColorAsState(
         targetValue = when {
             bpm == null -> Color.Gray
-            bpm > 100 -> Color(0xFFE53935)
-            bpm < 60 -> Color(0xFF1E88E5)
+            bpm > 100 -> Color(0xFFE53935)  // 红色：心率偏高
+            bpm < 60 -> Color(0xFF1E88E5)   // 蓝色：心率偏低
             else -> MaterialTheme.colorScheme.onSurface
         },
         label = "bpm_color"
@@ -165,6 +192,10 @@ private fun HeartRateDisplay(bpm: Int?, isAbnormal: Boolean) {
     }
 }
 
+/**
+ * 连接状态 banner。当设备断连或重连中时显示。
+ * 用于 Milestone 4（异常场景处理）。
+ */
 @Composable
 private fun ConnectionBanner(connectionState: ConnectionState) {
     if (connectionState != ConnectionState.CONNECTED) {
@@ -172,8 +203,8 @@ private fun ConnectionBanner(connectionState: ConnectionState) {
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
                 containerColor = when (connectionState) {
-                    ConnectionState.DISCONNECTED -> Color(0xFFFFEBEE)
-                    ConnectionState.RECONNECTING -> Color(0xFFFFF3E0)
+                    ConnectionState.DISCONNECTED -> Color(0xFFFFEBEE)  // 浅红
+                    ConnectionState.RECONNECTING -> Color(0xFFFFF3E0)  // 浅橙
                     else -> MaterialTheme.colorScheme.surface
                 }
             )
@@ -196,6 +227,10 @@ private fun ConnectionBanner(connectionState: ConnectionState) {
     }
 }
 
+/**
+ * 同步状态总结卡片。
+ * 显示待同步数与同步中状态。
+ */
 @Composable
 private fun SyncSummaryCard(pendingCount: Int, isSyncing: Boolean) {
     Card(

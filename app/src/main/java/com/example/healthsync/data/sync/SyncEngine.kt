@@ -9,6 +9,13 @@ import com.example.healthsync.data.remote.StepCountUploadItem
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 同步引擎（Milestone 2/3/7，DESIGN §6）：扫描 outbox → **事务抢占** SYNCING → 调用 [MockCloudApi] → 回写状态或重试计划。
+ *
+ * - 待同步条件：`syncState in (LOCAL_PENDING, SYNC_FAILED)` 且 `nextAttemptAt <= now`
+ * - 失败口径：`attemptCount` 为已失败次数；满 3 次进入 SYNC_FAILED（DESIGN §6.6）
+ * - [recover]：启动时将 SYNCING 重置为 LOCAL_PENDING，避免杀进程后永远卡住（保留 attemptCount）
+ */
 @Singleton
 class SyncEngine @Inject constructor(
     private val heartRateDao: HeartRateDao,
@@ -22,8 +29,7 @@ class SyncEngine @Inject constructor(
     }
 
     /**
-     * Runs one sync pass: scan pending → claim → upload → write back.
-     * @return true if any records were processed (caller may loop again).
+     * 执行一轮同步：心率批次与步数批次各至多处理一批；任一批有工作则返回 true，供前台循环继续调度。
      */
     suspend fun syncOnce(): Boolean {
         val now = System.currentTimeMillis()
@@ -36,8 +42,7 @@ class SyncEngine @Inject constructor(
     }
 
     /**
-     * Resets all SYNCING records to LOCAL_PENDING (preserving attemptCount).
-     * Called on app startup to recover from interrupted syncs.
+     * 杀进程/崩溃恢复：全部 SYNCING → LOCAL_PENDING，**不**清零 attemptCount（DESIGN §6.4）。
      */
     suspend fun recover() {
         val hrReset = heartRateDao.resetSyncingToLocal()

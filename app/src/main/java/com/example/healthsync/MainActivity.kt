@@ -8,6 +8,7 @@ import com.example.healthsync.ui.heartrate.HeartRateScreen
 import com.example.healthsync.ui.theme.HealthSyncTheme
 import dagger.hilt.android.AndroidEntryPoint
 
+/** 单 Activity + 100% Compose；当前宿主为心率闭环最小 UI（Milestone 1/6）。 */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
