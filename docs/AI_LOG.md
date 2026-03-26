@@ -67,6 +67,21 @@
 2同步批处理的“取出列表再逐条处理”：心率/步数会取一批（默认 50），睡眠逐条 PUT；在数据积压较大时，可能导致一次 sync pass 时间过长。
 方案：后续接真网络还要考虑超时/分片/并行度与背压。
 
+5、真实蓝牙接入的工程要点
+采集方式：BLE GATT 通知（notify/indicate）+ 解析 profile（心率常见是 Heart Rate Service）
+前台/后台策略：
+前台实时显示：可在 app 前台持续收集
+后台持续收集：通常需要 Foreground Service（否则容易被系统杀）
+同步仍用你现有的 WorkManager 兜底
+权限（Android 12+）：
+BLUETOOTH_SCAN / BLUETOOTH_CONNECT 等运行时权限
+扫描/连接节流与重连策略（避免耗电）
+6、Health Connect 接入的工程要点
+数据获取模型通常是“读系统健康库 + 订阅变更/定期拉取”，不像蓝牙那样持续 push
+权限：按数据类型申请（心率、步数、睡眠等）
+去重/幂等：
+Health Connect 往往自带 recordId / metadata，可作为 eventId 或组成稳定去重键
+仍要保证“重复读取/重复同步”不会造成重复入库/重复上传
 
 
 # 文档设计过程：
