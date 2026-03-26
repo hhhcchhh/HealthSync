@@ -55,6 +55,7 @@ class HistoryViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private val maxAttemptsForDisplay = 3
 
     /** 由多个数据源 Flow combine 而成的 UI 状态，订阅者至少保活 5 秒。 */
     val uiState: StateFlow<HistoryUiState> = combine(
@@ -65,22 +66,34 @@ class HistoryViewModel @Inject constructor(
     ) { hr, sc, sl, refreshing ->
         val items = buildList {
             hr.forEach { entity ->
+                val baseDetail = timeFormat.format(Date(entity.timestamp))
+                val syncSuffix = buildSyncDebugSuffix(
+                    syncState = entity.syncState,
+                    attemptCount = entity.attemptCount,
+                    lastError = entity.lastError
+                )
                 add(TimelineItem(
                     id = "hr-${entity.id}",
                     timestamp = entity.timestamp,
                     type = "heart_rate",
                     label = "${entity.bpm} BPM",
-                    detail = timeFormat.format(Date(entity.timestamp)),
+                    detail = baseDetail + syncSuffix,
                     syncState = entity.syncState
                 ))
             }
             sc.forEach { entity ->
+                val baseDetail = timeFormat.format(Date(entity.timestamp))
+                val syncSuffix = buildSyncDebugSuffix(
+                    syncState = entity.syncState,
+                    attemptCount = entity.attemptCount,
+                    lastError = entity.lastError
+                )
                 add(TimelineItem(
                     id = "sc-${entity.id}",
                     timestamp = entity.timestamp,
                     type = "step_count",
                     label = "+${entity.steps} 步",
-                    detail = timeFormat.format(Date(entity.timestamp)),
+                    detail = baseDetail + syncSuffix,
                     syncState = entity.syncState
                 ))
             }
@@ -88,12 +101,18 @@ class HistoryViewModel @Inject constructor(
                 val durationMs = entity.endTime - entity.startTime
                 val hours = TimeUnit.MILLISECONDS.toHours(durationMs)
                 val minutes = TimeUnit.MILLISECONDS.toMinutes(durationMs) % 60
+                val baseDetail = "${entity.quality.name} | ${timeFormat.format(Date(entity.startTime))}"
+                val syncSuffix = buildSyncDebugSuffix(
+                    syncState = entity.syncState,
+                    attemptCount = entity.attemptCount,
+                    lastError = entity.lastError
+                )
                 add(TimelineItem(
                     id = "sl-${entity.id}",
                     timestamp = entity.startTime,
                     type = "sleep",
                     label = "睡眠 ${hours}h ${minutes}m",
-                    detail = "${entity.quality.name} | ${timeFormat.format(Date(entity.startTime))}",
+                    detail = baseDetail + syncSuffix,
                     syncState = entity.syncState
                 ))
             }
@@ -110,6 +129,23 @@ class HistoryViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         HistoryUiState()
     )
+
+    private fun buildSyncDebugSuffix(syncState: SyncState, attemptCount: Int, lastError: String?): String {
+        val error = lastError?.trim().orEmpty()
+        val shortError = if (error.length > 60) error.take(60) + "…" else error
+
+        return when {
+            syncState == SyncState.SYNC_FAILED -> {
+                val msg = if (shortError.isNotEmpty()) "：$shortError" else ""
+                " | 失败(${attemptCount.coerceAtLeast(0)}/${maxAttemptsForDisplay})$msg"
+            }
+            attemptCount > 0 -> {
+                val msg = if (shortError.isNotEmpty()) "：$shortError" else ""
+                " | 重试(${attemptCount.coerceAtLeast(0)}/${maxAttemptsForDisplay})$msg"
+            }
+            else -> ""
+        }
+    }
 
     /** 下拉刷新回调：触发一次同步，并在同步完成后关闭刷新指示器。 */
     fun onRefresh() {
