@@ -13,7 +13,7 @@ import kotlin.random.Random
 /**
  * 模拟蓝牙数据源实现（Milestone 1/4，DESIGN §4.3）。
  *
- * 每 2 秒发出一个心率采样（55-125 bpm）、每 30 秒发出一个步数增量（1-20 步）。
+ * 每 2 秒发出一个心率采样（60-120 bpm）、每 30 秒发出一个步数增量（1-20 步）。
  * 支持模拟断连/重连，用于测试 UI 降级与重连逻辑（Milestone 4）。
  */
 @Singleton
@@ -55,7 +55,7 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
             totalElapsed += HEART_RATE_INTERVAL_MS
             heartRateCounter += HEART_RATE_INTERVAL_MS
 
-            val bpm = Random.nextInt(55, 125)
+            val bpm = Random.nextInt(60, 121)
             emit(
                 HealthEvent.HeartRateSample(
                     timestamp = System.currentTimeMillis(),

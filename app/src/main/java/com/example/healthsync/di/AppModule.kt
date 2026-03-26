@@ -1,6 +1,5 @@
 package com.example.healthsync.di
 
-import com.google.gson.Gson
 import com.example.healthsync.data.sync.AndroidSyncLogger
 import com.example.healthsync.data.sync.SyncLogger
 import dagger.Module
@@ -27,10 +26,6 @@ object AppModule {
     fun provideApplicationScope(): CoroutineScope {
         return CoroutineScope(SupervisorJob() + Dispatchers.Default)
     }
-
-    @Provides
-    @Singleton
-    fun provideGson(): Gson = Gson()
 
     @Provides
     @Singleton

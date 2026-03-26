@@ -1,68 +1,68 @@
 package com.example.healthsync.data.sync
 
 import com.example.healthsync.data.local.dao.HeartRateDao
+import com.example.healthsync.data.local.dao.SleepRecordDao
 import com.example.healthsync.data.local.dao.StepCountDao
 import com.example.healthsync.data.local.entity.SyncState
+import com.example.healthsync.data.remote.ApiConflictException
 import com.example.healthsync.data.remote.HeartRateUploadItem
 import com.example.healthsync.data.remote.MockCloudApi
+import com.example.healthsync.data.remote.SleepRecordUploadRequest
 import com.example.healthsync.data.remote.StepCountUploadItem
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 同步引擎（Milestone 2/3/7，DESIGN §6）：扫描 outbox → **事务抢占** SYNCING → 调用 [MockCloudApi] → 回写状态或重试计划。
+ * 同步引擎（Milestone 2/3/5/7，DESIGN §6）：扫描 outbox → **事务抢占** SYNCING → 调用 [MockCloudApi] → 回写状态或重试计划。
  *
  * - 待同步条件：`syncState in (LOCAL_PENDING, SYNC_FAILED)` 且 `nextAttemptAt <= now`
  * - 失败口径：`attemptCount` 为已失败次数；满 3 次进入 SYNC_FAILED（DESIGN §6.6）
+ * - 睡眠记录额外支持 409 冲突检测，委托 [ConflictResolver] 处理（DESIGN §7）
  * - [recover]：启动时将 SYNCING 重置为 LOCAL_PENDING，避免杀进程后永远卡住（保留 attemptCount）
  */
 @Singleton
 class SyncEngine @Inject constructor(
     private val heartRateDao: HeartRateDao,
     private val stepCountDao: StepCountDao,
+    private val sleepRecordDao: SleepRecordDao,
     private val cloudApi: MockCloudApi,
     private val retryPolicy: RetryPolicy,
+    private val conflictResolver: ConflictResolver,
     private val logger: SyncLogger
 ) {
     companion object {
         private const val TAG = "SyncEngine"
     }
 
-    /**
-     * 执行一轮同步：心率批次与步数批次各至多处理一批；任一批有工作则返回 true，供前台循环继续调度。
-     */
     suspend fun syncOnce(): Boolean {
         val now = System.currentTimeMillis()
         var didWork = false
 
         if (syncHeartRates(now)) didWork = true
         if (syncStepCounts(now)) didWork = true
+        if (syncSleepRecords(now)) didWork = true
 
         return didWork
     }
 
-    /**
-     * 杀进程/崩溃恢复：全部 SYNCING → LOCAL_PENDING，**不**清零 attemptCount（DESIGN §6.4）。
-     */
     suspend fun recover() {
         val hrReset = heartRateDao.resetSyncingToLocal()
         val scReset = stepCountDao.resetSyncingToLocal()
-        logger.i(TAG, "recover: reset $hrReset heart-rate, $scReset step-count records")
+        val slReset = sleepRecordDao.resetSyncingToLocal()
+        logger.i(TAG, "recover: reset $hrReset heart-rate, $scReset step-count, $slReset sleep records")
     }
 
-    /**
-     * @return the earliest nextAttemptAt among pending records, or null if none.
-     */
     suspend fun getEarliestPendingTime(): Long? {
-        val now = System.currentTimeMillis()
         val states = listOf(SyncState.LOCAL_PENDING, SyncState.SYNC_FAILED)
 
         val hrPending = heartRateDao.getPendingSync(states, Long.MAX_VALUE, 1)
         val scPending = stepCountDao.getPendingSync(states, Long.MAX_VALUE, 1)
+        val slPending = sleepRecordDao.getPendingSync(states, Long.MAX_VALUE, 1)
 
         val times = listOfNotNull(
             hrPending.firstOrNull()?.nextAttemptAt,
-            scPending.firstOrNull()?.nextAttemptAt
+            scPending.firstOrNull()?.nextAttemptAt,
+            slPending.firstOrNull()?.nextAttemptAt
         )
         return times.minOrNull()
     }
@@ -145,6 +145,40 @@ class SyncEngine @Inject constructor(
         return true
     }
 
+    private suspend fun syncSleepRecords(now: Long): Boolean {
+        val pending = sleepRecordDao.getPendingSync(
+            states = listOf(SyncState.LOCAL_PENDING, SyncState.SYNC_FAILED),
+            now = now
+        )
+        if (pending.isEmpty()) return false
+
+        val ids = pending.map { it.id }
+        val claimed = sleepRecordDao.claimForSync(ids)
+        if (claimed == 0) return false
+
+        for (record in pending) {
+            try {
+                val request = SleepRecordUploadRequest(
+                    id = record.id,
+                    startTime = record.startTime,
+                    endTime = record.endTime,
+                    quality = record.quality.name,
+                    baseRemoteVersion = record.baseRemoteVersion
+                )
+                val result = cloudApi.uploadSleepRecord(request)
+                sleepRecordDao.markSynced(record.id, result.remoteId, result.remoteVersion)
+                logger.d(TAG, "syncSleepRecords: record ${record.id} synced (v${result.remoteVersion})")
+            } catch (e: ApiConflictException) {
+                logger.w(TAG, "syncSleepRecords: conflict on ${record.id}", e)
+                conflictResolver.handleConflict(record.id, e.conflict)
+            } catch (e: Exception) {
+                logger.w(TAG, "syncSleepRecords failed for ${record.id}: ${e.message}", e)
+                handleSleepRecordFailure(record.id, record.attemptCount, e.message ?: "Unknown error")
+            }
+        }
+        return true
+    }
+
     private suspend fun handleHeartRateFailure(id: Long, currentAttemptCount: Int, error: String) {
         val newAttemptCount = currentAttemptCount + 1
         if (!retryPolicy.shouldRetry(newAttemptCount)) {
@@ -180,6 +214,28 @@ class SyncEngine @Inject constructor(
         } else {
             val delay = retryPolicy.nextDelay(currentAttemptCount)
             stepCountDao.markFailed(
+                id = id,
+                state = SyncState.LOCAL_PENDING,
+                attemptCount = newAttemptCount,
+                nextAttemptAt = System.currentTimeMillis() + delay,
+                error = error
+            )
+        }
+    }
+
+    private suspend fun handleSleepRecordFailure(id: String, currentAttemptCount: Int, error: String) {
+        val newAttemptCount = currentAttemptCount + 1
+        if (!retryPolicy.shouldRetry(newAttemptCount)) {
+            sleepRecordDao.markFailed(
+                id = id,
+                state = SyncState.SYNC_FAILED,
+                attemptCount = newAttemptCount,
+                nextAttemptAt = 0,
+                error = error
+            )
+        } else {
+            val delay = retryPolicy.nextDelay(currentAttemptCount)
+            sleepRecordDao.markFailed(
                 id = id,
                 state = SyncState.LOCAL_PENDING,
                 attemptCount = newAttemptCount,

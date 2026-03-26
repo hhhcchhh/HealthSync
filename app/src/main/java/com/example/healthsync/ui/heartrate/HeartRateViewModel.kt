@@ -33,6 +33,8 @@ data class HeartRateUiState(
     val chartPoints: List<ChartPoint> = emptyList(),
     /** 待同步的记录总数（用于 badge 显示）。 */
     val pendingSyncCount: Int = 0,
+    /** 未解决冲突数。 */
+    val conflictCount: Int = 0,
     /** 是否正在同步。 */
     val isSyncing: Boolean = false,
     /** 蓝牙连接状态（CONNECTED/DISCONNECTED/RECONNECTING）。 */
@@ -86,15 +88,20 @@ class HeartRateViewModel @Inject constructor(
             getHealthSummaryUseCase.getRecentHeartRates(anchorMs - FIVE_MINUTES_MS)
         }
 
+    private val syncCountFlow = combine(
+        getHealthSummaryUseCase.getPendingSyncCount(),
+        getHealthSummaryUseCase.getConflictCount()
+    ) { pending, conflict -> Pair(pending, conflict) }
+
     /**
-     * 数据流聚合：最近 5 分钟记录 + 最新单条记录 + 待同步数。
+     * 数据流聚合：最近 5 分钟记录 + 最新单条记录 + 同步/冲突计数。
      */
     private val dataFlows = combine(
         recentHeartRatesFlow,
         getHealthSummaryUseCase.getLatestHeartRate(),
-        getHealthSummaryUseCase.getPendingSyncCount()
-    ) { recent, latest, pendingCount ->
-        Triple(recent, latest, pendingCount)
+        syncCountFlow
+    ) { recent, latest, syncCounts ->
+        Triple(recent, latest, syncCounts)
     }
 
     /**
@@ -114,8 +121,9 @@ class HeartRateViewModel @Inject constructor(
      */
     val uiState: StateFlow<HeartRateUiState> = combine(
         dataFlows, statusFlows
-    ) { (records, latest, pendingCount), (syncing, connState, refreshing) ->
+    ) { (records, latest, syncCounts), (syncing, connState, refreshing) ->
         val bpm = latest?.bpm
+        val (pendingCount, conflictCount) = syncCounts
 
         HeartRateUiState(
             currentBpm = bpm,
@@ -124,6 +132,7 @@ class HeartRateViewModel @Inject constructor(
                 .sortedBy { it.timestamp }
                 .map { ChartPoint(it.timestamp, it.bpm) },
             pendingSyncCount = pendingCount,
+            conflictCount = conflictCount,
             isSyncing = syncing,
             connectionState = connState,
             isRefreshing = refreshing

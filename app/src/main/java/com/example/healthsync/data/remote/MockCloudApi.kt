@@ -98,7 +98,7 @@ class ApiException(message: String, val code: Int) : Exception(message)
  * **不代表真实后端行为**，仅用于验证同步流程与重试逻辑。
  */
 @Singleton
-class MockCloudApi @Inject constructor() {
+open class MockCloudApi @Inject constructor() {
 
     /** 睡眠记录存储（ID → 服务端数据）。 */
     private val sleepStore = ConcurrentHashMap<String, ServerSleepRecord>()
@@ -133,7 +133,7 @@ class MockCloudApi @Inject constructor() {
      * @return 上传结果列表（与输入一一对应）
      * @throws ApiException 网络错误
      */
-    suspend fun uploadHeartRates(items: List<HeartRateUploadItem>): List<UploadResult> {
+    open suspend fun uploadHeartRates(items: List<HeartRateUploadItem>): List<UploadResult> {
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -149,7 +149,7 @@ class MockCloudApi @Inject constructor() {
      * @return 上传结果列表
      * @throws ApiException 网络错误
      */
-    suspend fun uploadStepCounts(items: List<StepCountUploadItem>): List<UploadResult> {
+    open suspend fun uploadStepCounts(items: List<StepCountUploadItem>): List<UploadResult> {
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -171,7 +171,7 @@ class MockCloudApi @Inject constructor() {
      * @throws ApiConflictException 版本冲突（HTTP 409）
      * @throws ApiException 网络错误
      */
-    suspend fun uploadSleepRecord(request: SleepRecordUploadRequest): UploadResult {
+    open suspend fun uploadSleepRecord(request: SleepRecordUploadRequest): UploadResult {
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -220,6 +220,27 @@ class MockCloudApi @Inject constructor() {
         )
 
         return UploadResult(remoteId = request.id, remoteVersion = newVersion)
+    }
+
+    /**
+     * 获取单条睡眠记录（GET 语义，DESIGN §8.1）。
+     * 冲突时客户端可用此接口获取服务端最新数据。
+     *
+     * @param id 睡眠记录业务主键
+     * @return 服务端睡眠数据，若不存在返回 null
+     * @throws ApiException 网络错误
+     */
+    open suspend fun getSleepRecord(id: String): ServerSleepData? {
+        simulateNetworkDelay()
+        maybeThrowNetworkError()
+
+        val record = sleepStore[id] ?: return null
+        return ServerSleepData(
+            startTime = record.startTime,
+            endTime = record.endTime,
+            quality = record.quality,
+            remoteVersion = record.remoteVersion
+        )
     }
 
     /**

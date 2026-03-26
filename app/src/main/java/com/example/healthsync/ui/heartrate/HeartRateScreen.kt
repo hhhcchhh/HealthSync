@@ -84,10 +84,10 @@ fun HeartRateScreen(
             TopAppBar(
                 title = { Text("HealthSync") },
                 actions = {
-                    // TopAppBar 中的同步状态 badge
                     SyncStatusBadge(
                         pendingCount = state.pendingSyncCount,
                         isSyncing = state.isSyncing,
+                        conflictCount = state.conflictCount,
                         modifier = Modifier.padding(end = 16.dp)
                     )
                 }
@@ -143,9 +143,9 @@ fun HeartRateScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // 同步状态总结卡片
                 SyncSummaryCard(
                     pendingCount = state.pendingSyncCount,
+                    conflictCount = state.conflictCount,
                     isSyncing = state.isSyncing
                 )
             }
@@ -227,12 +227,8 @@ private fun ConnectionBanner(connectionState: ConnectionState) {
     }
 }
 
-/**
- * 同步状态总结卡片。
- * 显示待同步数与同步中状态。
- */
 @Composable
-private fun SyncSummaryCard(pendingCount: Int, isSyncing: Boolean) {
+private fun SyncSummaryCard(pendingCount: Int, conflictCount: Int, isSyncing: Boolean) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -250,7 +246,8 @@ private fun SyncSummaryCard(pendingCount: Int, isSyncing: Boolean) {
             )
             SyncStatusBadge(
                 pendingCount = pendingCount,
-                isSyncing = isSyncing
+                isSyncing = isSyncing,
+                conflictCount = conflictCount
             )
         }
     }

@@ -71,8 +71,9 @@ class SyncCoordinator @Inject constructor(
 
     /**
      * Triggers one immediate sync pass (used by manual refresh / WorkManager).
-     * If a sync is already running, this call waits for the mutex instead
-     * of starting a parallel pass.
+     * If a sync is already running, this call skips (returns immediately)
+     * rather than starting a parallel pass — the active loop will pick up
+     * any new pending records on its next iteration.
      */
     suspend fun triggerSync() {
         runSyncPass()

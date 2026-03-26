@@ -4,7 +4,9 @@ import com.example.healthsync.data.local.entity.HeartRateEntity
 import com.example.healthsync.data.local.entity.SyncState
 import com.example.healthsync.data.remote.MockCloudApi
 import com.example.healthsync.testutil.FakeHeartRateDao
+import com.example.healthsync.testutil.FakeSleepRecordDao
 import com.example.healthsync.testutil.FakeStepCountDao
+import com.google.gson.Gson
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -19,6 +21,7 @@ class SyncCoordinatorTest {
 
     private lateinit var heartRateDao: FakeHeartRateDao
     private lateinit var stepCountDao: FakeStepCountDao
+    private lateinit var sleepRecordDao: FakeSleepRecordDao
     private lateinit var cloudApi: MockCloudApi
     private lateinit var syncEngine: SyncEngine
     private lateinit var coordinator: SyncCoordinator
@@ -27,12 +30,14 @@ class SyncCoordinatorTest {
     fun setup() {
         heartRateDao = FakeHeartRateDao()
         stepCountDao = FakeStepCountDao()
+        sleepRecordDao = FakeSleepRecordDao()
         cloudApi = MockCloudApi().apply {
             failureRate = 0.0
             minDelayMs = 0
             maxDelayMs = 0
         }
-        syncEngine = SyncEngine(heartRateDao, stepCountDao, cloudApi, RetryPolicy(), NoopSyncLogger)
+        val conflictResolver = ConflictResolver(sleepRecordDao, Gson())
+        syncEngine = SyncEngine(heartRateDao, stepCountDao, sleepRecordDao, cloudApi, RetryPolicy(), conflictResolver, NoopSyncLogger)
         coordinator = SyncCoordinator(syncEngine, NoopSyncLogger)
     }
 
