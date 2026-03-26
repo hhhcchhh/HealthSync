@@ -1,10 +1,12 @@
 package com.example.healthsync.data.source
 
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.isActive
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -45,8 +47,10 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
         var stepCounter = 0L
         var totalElapsed = 0L
 
-        while (running) {
-            if (_connectionState.value != ConnectionState.CONNECTED) {
+        // 关键点：dataEvents 必须“常驻”，不能因 running=false 就结束；
+        // 否则在先 collectFrom() 后 start() 的启动顺序下，会订阅即结束，导致心率不再产生。
+        while (currentCoroutineContext().isActive) {
+            if (!running || _connectionState.value != ConnectionState.CONNECTED) {
                 delay(500)
                 continue
             }
