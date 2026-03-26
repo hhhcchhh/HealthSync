@@ -9,6 +9,9 @@ import com.example.healthsync.data.remote.HeartRateUploadItem
 import com.example.healthsync.data.remote.MockCloudApi
 import com.example.healthsync.data.remote.SleepRecordUploadRequest
 import com.example.healthsync.data.remote.StepCountUploadItem
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -96,6 +99,10 @@ class SyncEngine @Inject constructor(
                 }
             }
             logger.d(TAG, "syncHeartRates: ${pending.size} records synced")
+        } catch (e: CancellationException) {
+            // 关键：取消时必须释放仍处于 SYNCING 的记录，否则会卡住不再被扫描
+            withContext(NonCancellable) { heartRateDao.releaseSyncingByIds(ids) }
+            throw e
         } catch (e: Exception) {
             logger.w(TAG, "syncHeartRates failed: ${e.message}", e)
             val errorMsg = e.message ?: "Unknown error"
@@ -135,6 +142,9 @@ class SyncEngine @Inject constructor(
                 }
             }
             logger.d(TAG, "syncStepCounts: ${pending.size} records synced")
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { stepCountDao.releaseSyncingByIds(ids) }
+            throw e
         } catch (e: Exception) {
             logger.w(TAG, "syncStepCounts failed: ${e.message}", e)
             val errorMsg = e.message ?: "Unknown error"
@@ -156,25 +166,30 @@ class SyncEngine @Inject constructor(
         val claimed = sleepRecordDao.claimForSync(ids)
         if (claimed == 0) return false
 
-        for (record in pending) {
-            try {
-                val request = SleepRecordUploadRequest(
-                    id = record.id,
-                    startTime = record.startTime,
-                    endTime = record.endTime,
-                    quality = record.quality.name,
-                    baseRemoteVersion = record.baseRemoteVersion
-                )
-                val result = cloudApi.uploadSleepRecord(request)
-                sleepRecordDao.markSynced(record.id, result.remoteId, result.remoteVersion)
-                logger.d(TAG, "syncSleepRecords: record ${record.id} synced (v${result.remoteVersion})")
-            } catch (e: ApiConflictException) {
-                logger.w(TAG, "syncSleepRecords: conflict on ${record.id}", e)
-                conflictResolver.handleConflict(record.id, e.conflict)
-            } catch (e: Exception) {
-                logger.w(TAG, "syncSleepRecords failed for ${record.id}: ${e.message}", e)
-                handleSleepRecordFailure(record.id, record.attemptCount, e.message ?: "Unknown error")
+        try {
+            for (record in pending) {
+                try {
+                    val request = SleepRecordUploadRequest(
+                        id = record.id,
+                        startTime = record.startTime,
+                        endTime = record.endTime,
+                        quality = record.quality.name,
+                        baseRemoteVersion = record.baseRemoteVersion
+                    )
+                    val result = cloudApi.uploadSleepRecord(request)
+                    sleepRecordDao.markSynced(record.id, result.remoteId, result.remoteVersion)
+                    logger.d(TAG, "syncSleepRecords: record ${record.id} synced (v${result.remoteVersion})")
+                } catch (e: ApiConflictException) {
+                    logger.w(TAG, "syncSleepRecords: conflict on ${record.id}", e)
+                    conflictResolver.handleConflict(record.id, e.conflict)
+                } catch (e: Exception) {
+                    logger.w(TAG, "syncSleepRecords failed for ${record.id}: ${e.message}", e)
+                    handleSleepRecordFailure(record.id, record.attemptCount, e.message ?: "Unknown error")
+                }
             }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { sleepRecordDao.releaseSyncingByIds(ids) }
+            throw e
         }
         return true
     }

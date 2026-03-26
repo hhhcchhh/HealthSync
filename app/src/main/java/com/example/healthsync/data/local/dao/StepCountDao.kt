@@ -92,6 +92,13 @@ interface StepCountDao {
     suspend fun resetSyncingToLocal(): Int
 
     /**
+     * 取消/中断兜底：将指定 id 且仍处于 SYNCING 的记录释放回 LOCAL_PENDING。
+     * 用于防止 claim 后被取消导致记录长期卡在 SYNCING 而不再被扫描。
+     */
+    @Query("UPDATE step_count SET syncState = 'LOCAL_PENDING' WHERE id IN (:ids) AND syncState = 'SYNCING'")
+    suspend fun releaseSyncingByIds(ids: List<Long>): Int
+
+    /**
      * 查询所有步数记录。
      */
     @Query("SELECT * FROM step_count ORDER BY timestamp DESC")

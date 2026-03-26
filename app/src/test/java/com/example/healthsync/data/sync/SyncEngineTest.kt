@@ -4,11 +4,17 @@ import com.example.healthsync.data.local.entity.HeartRateEntity
 import com.example.healthsync.data.local.entity.SleepQuality
 import com.example.healthsync.data.local.entity.SleepRecordEntity
 import com.example.healthsync.data.local.entity.SyncState
+import com.example.healthsync.data.remote.HeartRateUploadItem
 import com.example.healthsync.data.remote.MockCloudApi
+import com.example.healthsync.data.remote.UploadResult
 import com.example.healthsync.testutil.FakeHeartRateDao
 import com.example.healthsync.testutil.FakeSleepRecordDao
 import com.example.healthsync.testutil.FakeStepCountDao
 import com.google.gson.Gson
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -75,6 +81,39 @@ class SyncEngineTest {
         heartRateDao.store.values.forEach { entity ->
             assertEquals(SyncState.SYNCED, entity.syncState)
         }
+    }
+
+    @Test
+    fun `cancellation during upload releases SYNCING records back to LOCAL_PENDING`() = runTest {
+        val uploadEntered = CompletableDeferred<Unit>()
+        cloudApi = object : MockCloudApi() {
+            override suspend fun uploadHeartRates(items: List<HeartRateUploadItem>): List<UploadResult> {
+                uploadEntered.complete(Unit)
+                // Hang until cancelled to simulate an in-flight network call.
+                return suspendCancellableCoroutine { /* cancelled */ }
+            }
+        }.apply {
+            failureRate = 0.0
+            minDelayMs = 0
+            maxDelayMs = 0
+        }
+        syncEngine = SyncEngine(
+            heartRateDao, stepCountDao, sleepRecordDao,
+            cloudApi, retryPolicy, conflictResolver, NoopSyncLogger
+        )
+
+        heartRateDao.store[1L] = makeHeartRate(1L, SyncState.LOCAL_PENDING)
+
+        val job: Job = launch {
+            syncEngine.syncOnce()
+        }
+
+        uploadEntered.await()
+        job.cancel()
+        job.join()
+
+        // Should not remain stuck in SYNCING after cancellation.
+        assertEquals(SyncState.LOCAL_PENDING, heartRateDao.store[1L]!!.syncState)
     }
 
     // ── Failure flow: retry then SYNC_FAILED ──

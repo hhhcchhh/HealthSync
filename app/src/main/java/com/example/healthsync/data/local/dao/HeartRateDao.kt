@@ -112,6 +112,15 @@ interface HeartRateDao {
     suspend fun resetSyncingToLocal(): Int
 
     /**
+     * 取消/中断兜底：将指定 id 且仍处于 SYNCING 的记录释放回 LOCAL_PENDING。
+     *
+     * 场景：同步循环在 claim 后被取消（如前台任务停止），若未能执行 markSynced/markFailed，
+     * 记录可能会长期卡在 SYNCING 导致后续扫描永远跳过。
+     */
+    @Query("UPDATE heart_rate SET syncState = 'LOCAL_PENDING' WHERE id IN (:ids) AND syncState = 'SYNCING'")
+    suspend fun releaseSyncingByIds(ids: List<Long>): Int
+
+    /**
      * 查询所有心率记录。用于历史页展示（Milestone 6）。
      */
     @Query("SELECT * FROM heart_rate ORDER BY timestamp DESC")

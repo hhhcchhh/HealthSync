@@ -80,6 +80,19 @@ class FakeStepCountDao : StepCountDao {
         return count
     }
 
+    override suspend fun releaseSyncingByIds(ids: List<Long>): Int {
+        var count = 0
+        ids.forEach { id ->
+            val entity = store[id]
+            if (entity != null && entity.syncState == SyncState.SYNCING) {
+                store[id] = entity.copy(syncState = SyncState.LOCAL_PENDING)
+                count++
+            }
+        }
+        if (count > 0) notifyChange()
+        return count
+    }
+
     override fun getAllFlow(): Flow<List<StepCountEntity>> =
         storeFlow.map { store.values.sortedByDescending { it.timestamp } }
 }

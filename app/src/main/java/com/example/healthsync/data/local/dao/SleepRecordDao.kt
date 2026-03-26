@@ -119,6 +119,13 @@ interface SleepRecordDao {
     suspend fun resetSyncingToLocal(): Int
 
     /**
+     * 取消/中断兜底：将指定 id 且仍处于 SYNCING 的记录释放回 LOCAL_PENDING。
+     * 用于防止 claim 后被取消导致记录长期卡在 SYNCING 而不再被扫描。
+     */
+    @Query("UPDATE sleep_record SET syncState = 'LOCAL_PENDING' WHERE id IN (:ids) AND syncState = 'SYNCING'")
+    suspend fun releaseSyncingByIds(ids: List<String>): Int
+
+    /**
      * 解决冲突：更新记录内容（startTime/endTime/quality）并回到 LOCAL_PENDING 或 SYNCED 状态，
      * 同时递增 localVersion、更新 baseRemoteVersion、清除 serverSnapshot。
      * 由 UseCase/UI 调用以完成冲突解决流程（DESIGN §7.2）。

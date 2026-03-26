@@ -6,6 +6,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 
 /**
  * WorkManager Worker（Milestone 3，DESIGN §6.1）。
@@ -36,6 +37,10 @@ class SyncWorker @AssistedInject constructor(
             syncCoordinator.recover()
             syncCoordinator.triggerSync()
             Result.success()
+        } catch (e: CancellationException) {
+            // 避免吞掉协程取消：WorkManager 停止/取消任务时应直接向上抛出
+            logger.w(TAG, "Sync worker cancelled", e)
+            throw e
         } catch (e: Exception) {
             logger.e(TAG, "Sync worker failed", e)
             Result.retry()
