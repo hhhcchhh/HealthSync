@@ -75,6 +75,10 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
             }
 
             delay(HEART_RATE_INTERVAL_MS)
+            // Stop/disconnect may happen while we're delaying; re-check before emitting.
+            if (!running || _connectionState.value != ConnectionState.CONNECTED) {
+                continue
+            }
             totalElapsed += HEART_RATE_INTERVAL_MS
             heartRateCounter += HEART_RATE_INTERVAL_MS
 
