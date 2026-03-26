@@ -1,6 +1,7 @@
 package com.example.healthsync.ui.history
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,14 +15,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +37,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.healthsync.data.local.entity.SyncState
+import com.example.healthsync.data.local.entity.SleepQuality
+import com.example.healthsync.data.sync.ConflictResolution
+import com.example.healthsync.data.remote.ServerSleepData
+import com.example.healthsync.ui.components.SleepRecordEditorDialog
+import com.google.gson.Gson
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 健康数据历史时间线页面（Milestone 6，DESIGN §10.3）。
@@ -45,6 +59,13 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    var editSleep by remember {
+        mutableStateOf<EditSleepRequest?>(null)
+    }
+    var resolveConflict by remember {
+        mutableStateOf<ResolveConflictRequest?>(null)
+    }
 
     PullToRefreshBox(
         isRefreshing = state.isRefreshing,
@@ -90,20 +111,101 @@ fun HistoryScreen(
                         key = { it.id },
                         contentType = { it.type }
                     ) { item ->
-                        HistoryItemCard(item.type, item.label, item.detail, item.syncState)
+                        val onClick: (() -> Unit)? = if (item.type == "sleep" && item.sleepRecordId != null) {
+                            {
+                                if (item.syncState == SyncState.CONFLICT) {
+                                    resolveConflict = ResolveConflictRequest(
+                                        recordId = item.sleepRecordId,
+                                        localStart = item.sleepStartTime ?: 0L,
+                                        localEnd = item.sleepEndTime ?: 0L,
+                                        localQuality = item.sleepQuality?.name ?: "",
+                                        serverSnapshot = item.sleepServerSnapshot
+                                    )
+                                } else {
+                                    editSleep = EditSleepRequest(
+                                        recordId = item.sleepRecordId,
+                                        startTimeMs = item.sleepStartTime ?: 0L,
+                                        endTimeMs = item.sleepEndTime ?: 0L,
+                                        quality = item.sleepQuality
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
+
+                        HistoryItemCard(
+                            type = item.type,
+                            label = item.label,
+                            detail = item.detail,
+                            syncState = item.syncState,
+                            onClick = onClick
+                        )
                     }
                 }
             }
         }
     }
+
+    if (editSleep != null) {
+        val req = editSleep!!
+        SleepRecordEditorDialog(
+            onDismiss = { editSleep = null },
+            onSave = { startMs, endMs, quality ->
+                viewModel.editSleepRecord(req.recordId, startMs, endMs, quality)
+                editSleep = null
+            },
+            title = "编辑睡眠记录",
+            initialStartTimeMs = req.startTimeMs,
+            initialEndTimeMs = req.endTimeMs,
+            initialQuality = req.quality ?: SleepQuality.GOOD
+        )
+    }
+
+    if (resolveConflict != null) {
+        val req = resolveConflict!!
+        ConflictResolutionDialog(
+            recordId = req.recordId,
+            localStart = req.localStart,
+            localEnd = req.localEnd,
+            localQuality = req.localQuality,
+            serverSnapshot = req.serverSnapshot,
+            onDismiss = { resolveConflict = null },
+            onSelect = { resolution ->
+                viewModel.resolveSleepConflict(req.recordId, resolution)
+                resolveConflict = null
+            }
+        )
+    }
 }
+
+private data class EditSleepRequest(
+    val recordId: String,
+    val startTimeMs: Long,
+    val endTimeMs: Long,
+    val quality: SleepQuality?
+)
+
+private data class ResolveConflictRequest(
+    val recordId: String,
+    val localStart: Long,
+    val localEnd: Long,
+    val localQuality: String,
+    val serverSnapshot: String?
+)
 
 /**
  * 单条历史记录卡片。左侧为类型图标，中间为主标签+详情，
  * 若记录处于 CONFLICT 或 SYNC_FAILED 状态则右侧显示对应提示。
  */
 @Composable
-private fun HistoryItemCard(type: String, label: String, detail: String, syncState: SyncState) {
+private fun HistoryItemCard(
+    type: String,
+    label: String,
+    detail: String,
+    syncState: SyncState,
+    onClick: (() -> Unit)? = null
+) {
     val typeIcon = when (type) {
         "heart_rate" -> "\u2764\uFE0F"
         "step_count" -> "\uD83D\uDEB6"
@@ -120,7 +222,9 @@ private fun HistoryItemCard(type: String, label: String, detail: String, syncSta
     }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Row(
@@ -150,4 +254,82 @@ private fun HistoryItemCard(type: String, label: String, detail: String, syncSta
             }
         }
     }
+}
+
+@Composable
+private fun ConflictResolutionDialog(
+    recordId: String,
+    localStart: Long,
+    localEnd: Long,
+    localQuality: String,
+    serverSnapshot: String?,
+    onDismiss: () -> Unit,
+    onSelect: (ConflictResolution) -> Unit
+) {
+    val df = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+    val gson = remember { Gson() }
+    val serverData = remember(serverSnapshot) {
+        if (serverSnapshot.isNullOrBlank()) {
+            null
+        } else {
+            runCatching { gson.fromJson(serverSnapshot, ServerSleepData::class.java) }.getOrNull()
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "解决冲突") },
+        text = {
+            Column {
+                Text(
+                    text = "记录：$recordId",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(text = "本地版本", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(text = "${df.format(Date(localStart))} → ${df.format(Date(localEnd))}")
+                Text(text = "质量：$localQuality")
+
+                Spacer(Modifier.height(12.dp))
+
+                Text(text = "服务端快照", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                when {
+                    serverData != null -> {
+                        Text(text = "${df.format(Date(serverData.startTime))} → ${df.format(Date(serverData.endTime))}")
+                        Text(text = "质量：${serverData.quality}")
+                        Text(
+                            text = "版本：v${serverData.remoteVersion}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    serverSnapshot.isNullOrBlank() -> {
+                        Text(text = "（无快照数据）", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    else -> {
+                        // 降级展示：解析失败时展示 JSON 片段，避免 UI 崩溃
+                        val raw = if (serverSnapshot.length > 240) serverSnapshot.take(240) + "…" else serverSnapshot
+                        Text(
+                            text = raw,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row {
+                TextButton(onClick = { onSelect(ConflictResolution.KEEP_LOCAL) }) { Text("保留本地") }
+                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = { onSelect(ConflictResolution.KEEP_REMOTE) }) { Text("采用云端") }
+                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = { onSelect(ConflictResolution.MERGE) }) { Text("合并") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }

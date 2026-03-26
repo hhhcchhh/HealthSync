@@ -2,9 +2,13 @@ package com.example.healthsync.ui.history
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.healthsync.data.local.entity.SleepQuality
 import com.example.healthsync.data.local.entity.SyncState
 import com.example.healthsync.domain.usecase.GetHealthSummaryUseCase
+import com.example.healthsync.domain.usecase.ResolveConflictUseCase
+import com.example.healthsync.domain.usecase.SaveSleepRecordUseCase
 import com.example.healthsync.domain.usecase.TriggerSyncUseCase
+import com.example.healthsync.data.sync.ConflictResolution
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,7 +31,13 @@ data class TimelineItem(
     val type: String,
     val label: String,
     val detail: String,
-    val syncState: SyncState
+    val syncState: SyncState,
+    // Sleep-only payload (for edit & conflict resolution UI).
+    val sleepRecordId: String? = null,
+    val sleepStartTime: Long? = null,
+    val sleepEndTime: Long? = null,
+    val sleepQuality: SleepQuality? = null,
+    val sleepServerSnapshot: String? = null
 )
 
 /**
@@ -49,7 +59,9 @@ data class HistoryUiState(
 @HiltViewModel
 class HistoryViewModel @Inject constructor(
     private val getHealthSummaryUseCase: GetHealthSummaryUseCase,
-    private val triggerSyncUseCase: TriggerSyncUseCase
+    private val triggerSyncUseCase: TriggerSyncUseCase,
+    private val saveSleepRecordUseCase: SaveSleepRecordUseCase,
+    private val resolveConflictUseCase: ResolveConflictUseCase
 ) : ViewModel() {
 
     private val _isRefreshing = MutableStateFlow(false)
@@ -113,7 +125,12 @@ class HistoryViewModel @Inject constructor(
                     type = "sleep",
                     label = "睡眠 ${hours}h ${minutes}m",
                     detail = baseDetail + syncSuffix,
-                    syncState = entity.syncState
+                    syncState = entity.syncState,
+                    sleepRecordId = entity.id,
+                    sleepStartTime = entity.startTime,
+                    sleepEndTime = entity.endTime,
+                    sleepQuality = entity.quality,
+                    sleepServerSnapshot = entity.serverSnapshot
                 ))
             }
         }.sortedByDescending { it.timestamp }
@@ -156,6 +173,26 @@ class HistoryViewModel @Inject constructor(
             } finally {
                 _isRefreshing.value = false
             }
+        }
+    }
+
+    fun editSleepRecord(id: String, startTimeMs: Long, endTimeMs: Long, quality: SleepQuality) {
+        viewModelScope.launch {
+            saveSleepRecordUseCase.edit(
+                id = id,
+                startTime = startTimeMs,
+                endTime = endTimeMs,
+                quality = quality
+            )
+            // Best-effort: immediately try to sync (offline will remain pending / retry later).
+            triggerSyncUseCase()
+        }
+    }
+
+    fun resolveSleepConflict(id: String, resolution: ConflictResolution) {
+        viewModelScope.launch {
+            resolveConflictUseCase(recordId = id, resolution = resolution)
+            triggerSyncUseCase()
         }
     }
 }

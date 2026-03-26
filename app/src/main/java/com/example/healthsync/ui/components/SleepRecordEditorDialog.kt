@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import com.example.healthsync.data.local.entity.SleepQuality
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -40,13 +41,34 @@ import java.time.format.DateTimeParseException
 @Composable
 fun SleepRecordEditorDialog(
     onDismiss: () -> Unit,
-    onSave: (startTimeMs: Long, endTimeMs: Long, quality: SleepQuality) -> Unit
+    onSave: (startTimeMs: Long, endTimeMs: Long, quality: SleepQuality) -> Unit,
+    title: String = "新增睡眠记录",
+    initialStartTimeMs: Long? = null,
+    initialEndTimeMs: Long? = null,
+    initialQuality: SleepQuality? = null
 ) {
     val timeFormatter = remember { DateTimeFormatter.ofPattern("H:mm") }
+    val zone = remember { ZoneId.systemDefault() }
+    val baseDate = remember(initialStartTimeMs) {
+        initialStartTimeMs?.let {
+            Instant.ofEpochMilli(it).atZone(zone).toLocalDate()
+        } ?: LocalDate.now()
+    }
 
-    var startTimeText by rememberSaveable { mutableStateOf("23:00") }
-    var endTimeText by rememberSaveable { mutableStateOf("07:00") }
-    var selectedQuality by rememberSaveable { mutableStateOf(SleepQuality.GOOD) }
+    val startDefault = remember(initialStartTimeMs) {
+        initialStartTimeMs?.let {
+            Instant.ofEpochMilli(it).atZone(zone).toLocalTime().format(timeFormatter)
+        } ?: "23:00"
+    }
+    val endDefault = remember(initialEndTimeMs) {
+        initialEndTimeMs?.let {
+            Instant.ofEpochMilli(it).atZone(zone).toLocalTime().format(timeFormatter)
+        } ?: "07:00"
+    }
+
+    var startTimeText by rememberSaveable(initialStartTimeMs) { mutableStateOf(startDefault) }
+    var endTimeText by rememberSaveable(initialEndTimeMs) { mutableStateOf(endDefault) }
+    var selectedQuality by rememberSaveable(initialQuality) { mutableStateOf(initialQuality ?: SleepQuality.GOOD) }
 
     var qualityExpanded by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
@@ -69,11 +91,8 @@ fun SleepRecordEditorDialog(
             return null
         }
 
-        val today = LocalDate.now()
-        val zone = ZoneId.systemDefault()
-
-        val startDateTime = today.atTime(start)
-        val endDate = if (end <= start) today.plusDays(1) else today
+        val startDateTime = baseDate.atTime(start)
+        val endDate = if (end <= start) baseDate.plusDays(1) else baseDate
         val endDateTime = endDate.atTime(end)
 
         val startMs = startDateTime.atZone(zone).toInstant().toEpochMilli()
@@ -90,7 +109,7 @@ fun SleepRecordEditorDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = "新增睡眠记录") },
+        title = { Text(text = title) },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
@@ -145,7 +164,7 @@ fun SleepRecordEditorDialog(
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "提示：默认日期为今天；若结束时间早于开始时间，会按跨天处理。",
+                    text = "提示：日期以开始时间所在天为基准；若结束时间早于开始时间，会按跨天处理（+1天）。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
