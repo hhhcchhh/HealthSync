@@ -202,6 +202,14 @@ SyncEngine 只做两件事：
   - Hilt 绑定（multibinding）
 - 不修改现有 Repository/SyncEngine 核心代码
 
+#### 4.4.3 当前实现状态（技术债务）
+
+> **现状**：当前 `HealthRepository.handleEvent` 仍使用 `when(event)` 逐类型分发入库，`SyncEngine.syncOnce()` 也为每种数据类型编写了独立的同步方法（`syncHeartRates / syncStepCounts / syncSleepRecords`）。这意味着新增数据类型时，仍需修改 Repository 和 SyncEngine 的代码。
+>
+> **原因**：在 Milestone 5/6 阶段，数据类型仅三种（心率/步数/睡眠），引入 EventHandler/SyncAdapter + Hilt multibinding 的抽象成本较高，投入产出比不划算。优先保证核心同步链路的正确性与可测试性。
+>
+> **后续计划**：当需要新增第四种数据类型（如血氧）时，应优先重构为 §4.4.2 所述的可插拔架构，避免 Repository/SyncEngine 膨胀为"上帝类"。
+
 ---
 
 ## 5. 本地数据模型与同步状态机
@@ -314,7 +322,9 @@ stateDiagram-v2
 
 > 补充说明：`nextAttemptAt` 是“最早允许重试时间（not-before）”，并不保证到点立刻执行；若采用固定间隔扫描，实际重试会被扫描粒度量化。前台持续推进循环通过“对齐最近 nextAttemptAt”能避免这一问题。
 
-> 并发补充：前台持续推进循环、WorkManager Worker、手动刷新、启动恢复等都可能触发同步。为避免重复处理同一条记录，抢占阶段必须在事务中将记录原子标记为 `SYNCING`（见 6.2 第 2 步），其他执行者抢占失败则跳过该记录。为减少资源浪费，在 `SyncEngine` 内增加“进程内单实例运行锁”（例如 Mutex/atomic flag）：当同步已在运行时，新触发只做唤醒/加速而不再启动第二个循环；同时 WorkManager 使用 UniqueWork 避免重复排程。
+> 并发补充：前台持续推进循环、WorkManager Worker、手动刷新、启动恢复等都可能触发同步。为避免重复处理同一条记录，抢占阶段必须在事务中将记录原子标记为 `SYNCING`（见 6.2 第 2 步），其他执行者抢占失败则跳过该记录。为减少资源浪费，`SyncCoordinator` 内使用 `Mutex.tryLock()` 作为“进程内单实例运行锁”：当同步已在运行时，新触发直接跳过（skip）而非排队等待或启动第二个循环——正在执行的 `syncOnce()` 会扫描所有 pending 记录，因此被跳过的触发不会丢失数据；当同步未在运行时（例如前台循环正处于 `delay()` 等待阶段），`tryLock()` 立即获得锁，新触发正常执行一轮完整的同步扫描，等效于提前唤醒空闲循环。同时 WorkManager 使用 UniqueWork 避免重复排程。
+>
+> **已知局限（当前不做优化）**：`syncOnce()` 按 HeartRate → StepCount → SleepRecord 顺序依次扫描，若新记录在某类型扫描完成后才插入，该记录会被当前 pass 漏掉。多数情况下 `syncOnce()` 返回 `true`，前台循环立即进入下一轮（毫秒级延迟），影响可忽略；但若当前 pass 恰好三类均无数据（`syncOnce()` 返回 `false`），循环将进入 `delay()`（最长 30s），新记录需等到 delay 结束后才被处理。彻底消除此窗口需引入信号机制（如 `Channel` 或取消 delay 的 Job），在 Repository 写入时主动唤醒循环；当前阶段 30s 最大延迟可接受，暂不实现。
 
 ### 6.2 同步流程（高层）
 1. 查询待同步记录：`syncState in (LOCAL_PENDING, SYNC_FAILED)` 且 `nextAttemptAt <= now`
@@ -676,6 +686,7 @@ sequenceDiagram
 # 约定：目录按 UI / domain / data 分层；新增数据源或策略时优先“新增实现+DI 注册”，避免修改核心同步引擎代码。
 app/src/main/java/com/healthsync/
 ├── di/                          # Hilt modules
+│   ├── AppModule.kt             # @ApplicationScope CoroutineScope、SyncLogger
 │   ├── DataSourceModule.kt
 │   ├── DatabaseModule.kt
 │   └── NetworkModule.kt
