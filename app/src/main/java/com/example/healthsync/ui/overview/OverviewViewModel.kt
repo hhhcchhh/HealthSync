@@ -2,10 +2,13 @@ package com.example.healthsync.ui.overview
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.healthsync.data.local.entity.SleepQuality
 import com.example.healthsync.data.local.entity.SleepRecordEntity
 import com.example.healthsync.data.sync.SyncCoordinator
 import com.example.healthsync.domain.usecase.GetHealthSummaryUseCase
+import com.example.healthsync.domain.usecase.SaveSleepRecordUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -41,7 +44,8 @@ data class OverviewUiState(
 @HiltViewModel
 class OverviewViewModel @Inject constructor(
     getHealthSummaryUseCase: GetHealthSummaryUseCase,
-    syncCoordinator: SyncCoordinator
+    syncCoordinator: SyncCoordinator,
+    private val saveSleepRecordUseCase: SaveSleepRecordUseCase
 ) : ViewModel() {
 
     /** 今日 0 点的毫秒时间戳，每次读取时实时计算，用于查询今日步数。 */
@@ -82,4 +86,18 @@ class OverviewViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         OverviewUiState()
     )
+
+    /**
+     * 手动新增睡眠记录入口。最终写入路径为：
+     * UI -> ViewModel -> SaveSleepRecordUseCase -> ManualInputSource -> Repository.collectFrom -> Room
+     */
+    fun createSleepRecord(startTimeMs: Long, endTimeMs: Long, quality: SleepQuality) {
+        viewModelScope.launch {
+            saveSleepRecordUseCase.createNew(
+                startTime = startTimeMs,
+                endTime = endTimeMs,
+                quality = quality
+            )
+        }
+    }
 }
