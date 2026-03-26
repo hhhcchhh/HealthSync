@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.healthsync.data.local.entity.SleepQuality
 import com.example.healthsync.data.local.entity.SyncState
+import com.example.healthsync.data.remote.MockCloudApi
+import com.example.healthsync.data.remote.ServerSleepData
 import com.example.healthsync.domain.usecase.GetHealthSummaryUseCase
 import com.example.healthsync.domain.usecase.ResolveConflictUseCase
 import com.example.healthsync.domain.usecase.SaveSleepRecordUseCase
@@ -61,7 +63,8 @@ class HistoryViewModel @Inject constructor(
     private val getHealthSummaryUseCase: GetHealthSummaryUseCase,
     private val triggerSyncUseCase: TriggerSyncUseCase,
     private val saveSleepRecordUseCase: SaveSleepRecordUseCase,
-    private val resolveConflictUseCase: ResolveConflictUseCase
+    private val resolveConflictUseCase: ResolveConflictUseCase,
+    private val cloudApi: MockCloudApi
 ) : ViewModel() {
 
     private val _isRefreshing = MutableStateFlow(false)
@@ -194,5 +197,13 @@ class HistoryViewModel @Inject constructor(
             resolveConflictUseCase(recordId = id, resolution = resolution)
             triggerSyncUseCase()
         }
+    }
+
+    /**
+     * Debug-only: simulate a server-side update of a sleep record (another device),
+     * so the next client sync will hit a 409 conflict if it edited offline.
+     */
+    suspend fun simulateRemoteSleepUpdate(id: String): ServerSleepData? {
+        return cloudApi.simulateRemoteSleepUpdate(id)
     }
 }

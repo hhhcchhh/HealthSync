@@ -2,6 +2,9 @@ package com.example.healthsync.data.remote
 
 import com.example.healthsync.data.local.entity.SleepQuality
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -116,6 +119,61 @@ open class MockCloudApi @Inject constructor() {
     /** 强制冲突标志（用于测试，Milestone 7）。 */
     var forceConflict: Boolean = false
 
+    /**
+     * Simulated network switch for deterministic offline/online demos.
+     * When offline, all API calls fail fast with [ApiException].
+     */
+    private val _networkAvailable = MutableStateFlow(true)
+    val networkAvailable: StateFlow<Boolean> = _networkAvailable.asStateFlow()
+
+    fun setNetworkAvailable(available: Boolean) {
+        _networkAvailable.value = available
+    }
+
+    fun disconnectNetwork() = setNetworkAvailable(false)
+    fun connectNetwork() = setNetworkAvailable(true)
+
+    /**
+     * Simulate an update coming from another device on the server.
+     *
+     * Important: This bypasses the simulated client network switch on purpose,
+     * so you can reproduce the conflict scenario:
+     * - client offline edits based on baseRemoteVersion
+     * - server changes in the meantime (remoteVersion increments)
+     * - client comes back online and hits HTTP 409 conflict
+     *
+     * @return the updated server snapshot, or null if the record doesn't exist on server yet
+     */
+    fun simulateRemoteSleepUpdate(id: String): ServerSleepData? {
+        val existing = sleepStore[id] ?: return null
+
+        val newVersion = existing.remoteVersion + 1
+        val newQuality = when (existing.quality) {
+            "POOR" -> "FAIR"
+            "FAIR" -> "GOOD"
+            "GOOD" -> "EXCELLENT"
+            "EXCELLENT" -> "GOOD"
+            else -> "FAIR"
+        }
+
+        // Small change to make the update visible in snapshots.
+        val newEndTime = existing.endTime + 15 * 60 * 1000L
+
+        val updated = existing.copy(
+            endTime = newEndTime,
+            quality = newQuality,
+            remoteVersion = newVersion
+        )
+        sleepStore[id] = updated
+
+        return ServerSleepData(
+            startTime = updated.startTime,
+            endTime = updated.endTime,
+            quality = updated.quality,
+            remoteVersion = updated.remoteVersion
+        )
+    }
+
     private data class ServerSleepRecord(
         val id: String,
         val startTime: Long,
@@ -134,6 +192,7 @@ open class MockCloudApi @Inject constructor() {
      * @throws ApiException 网络错误
      */
     open suspend fun uploadHeartRates(items: List<HeartRateUploadItem>): List<UploadResult> {
+        requireNetwork()
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -150,6 +209,7 @@ open class MockCloudApi @Inject constructor() {
      * @throws ApiException 网络错误
      */
     open suspend fun uploadStepCounts(items: List<StepCountUploadItem>): List<UploadResult> {
+        requireNetwork()
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -172,6 +232,7 @@ open class MockCloudApi @Inject constructor() {
      * @throws ApiException 网络错误
      */
     open suspend fun uploadSleepRecord(request: SleepRecordUploadRequest): UploadResult {
+        requireNetwork()
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -231,6 +292,7 @@ open class MockCloudApi @Inject constructor() {
      * @throws ApiException 网络错误
      */
     open suspend fun getSleepRecord(id: String): ServerSleepData? {
+        requireNetwork()
         simulateNetworkDelay()
         maybeThrowNetworkError()
 
@@ -241,6 +303,12 @@ open class MockCloudApi @Inject constructor() {
             quality = record.quality,
             remoteVersion = record.remoteVersion
         )
+    }
+
+    private fun requireNetwork() {
+        if (!_networkAvailable.value) {
+            throw ApiException("Simulated offline", 503)
+        }
     }
 
     /**

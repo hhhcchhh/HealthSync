@@ -2,6 +2,7 @@ package com.example.healthsync.ui.heartrate
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.healthsync.data.remote.MockCloudApi
 import com.example.healthsync.data.source.ConnectionState
 import com.example.healthsync.data.source.SimulatedBluetoothSource
 import com.example.healthsync.data.sync.SyncCoordinator
@@ -39,6 +40,8 @@ data class HeartRateUiState(
     val isSyncing: Boolean = false,
     /** 蓝牙连接状态（CONNECTED/DISCONNECTED/RECONNECTING）。 */
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    /** 模拟网络是否可用（用于演示离线同步与冲突链路）。 */
+    val isNetworkAvailable: Boolean = true,
     /** 下拉刷新状态。 */
     val isRefreshing: Boolean = false
 )
@@ -66,6 +69,7 @@ class HeartRateViewModel @Inject constructor(
     private val getHealthSummaryUseCase: GetHealthSummaryUseCase,
     private val triggerSyncUseCase: TriggerSyncUseCase,
     private val simulatedSource: SimulatedBluetoothSource,
+    private val cloudApi: MockCloudApi,
     private val syncCoordinator: SyncCoordinator,
     @param:ApplicationScope private val appScope: CoroutineScope
 ) : ViewModel() {
@@ -110,10 +114,18 @@ class HeartRateViewModel @Inject constructor(
     private val statusFlows = combine(
         syncCoordinator.isSyncing,
         simulatedSource.connectionState,
+        cloudApi.networkAvailable,
         _isRefreshing
-    ) { syncing, conn, refreshing ->
-        Triple(syncing, conn, refreshing)
+    ) { syncing, conn, network, refreshing ->
+        StatusBundle(syncing, conn, network, refreshing)
     }
+
+    private data class StatusBundle(
+        val isSyncing: Boolean,
+        val connectionState: ConnectionState,
+        val networkAvailable: Boolean,
+        val isRefreshing: Boolean
+    )
 
     /**
      * 最终 UI 状态流：combine 数据流与状态流，生成 HeartRateUiState。
@@ -121,7 +133,7 @@ class HeartRateViewModel @Inject constructor(
      */
     val uiState: StateFlow<HeartRateUiState> = combine(
         dataFlows, statusFlows
-    ) { (records, latest, syncCounts), (syncing, connState, refreshing) ->
+    ) { (records, latest, syncCounts), status ->
         val bpm = latest?.bpm
         val (pendingCount, conflictCount) = syncCounts
 
@@ -133,9 +145,10 @@ class HeartRateViewModel @Inject constructor(
                 .map { ChartPoint(it.timestamp, it.bpm) },
             pendingSyncCount = pendingCount,
             conflictCount = conflictCount,
-            isSyncing = syncing,
-            connectionState = connState,
-            isRefreshing = refreshing
+            isSyncing = status.isSyncing,
+            connectionState = status.connectionState,
+            isNetworkAvailable = status.networkAvailable,
+            isRefreshing = status.isRefreshing
         )
     }.stateIn(
         viewModelScope,
@@ -170,5 +183,25 @@ class HeartRateViewModel @Inject constructor(
      */
     fun stopForegroundSync() {
         syncCoordinator.stopForegroundLoop()
+    }
+
+    fun disconnectDevice() {
+        viewModelScope.launch {
+            simulatedSource.stop()
+        }
+    }
+
+    fun reconnectDevice() {
+        viewModelScope.launch {
+            simulatedSource.start()
+        }
+    }
+
+    fun disconnectNetwork() {
+        cloudApi.disconnectNetwork()
+    }
+
+    fun reconnectNetwork() {
+        cloudApi.connectNetwork()
     }
 }

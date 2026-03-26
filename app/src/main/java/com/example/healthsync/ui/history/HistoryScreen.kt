@@ -20,6 +20,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -28,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +46,7 @@ import com.example.healthsync.data.sync.ConflictResolution
 import com.example.healthsync.data.remote.ServerSleepData
 import com.example.healthsync.ui.components.SleepRecordEditorDialog
 import com.google.gson.Gson
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,6 +64,8 @@ fun HistoryScreen(
     viewModel: HistoryViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     var editSleep by remember {
         mutableStateOf<EditSleepRequest?>(null)
@@ -67,80 +74,104 @@ fun HistoryScreen(
         mutableStateOf<ResolveConflictRequest?>(null)
     }
 
-    PullToRefreshBox(
-        isRefreshing = state.isRefreshing,
-        onRefresh = { viewModel.onRefresh() },
-        modifier = Modifier.fillMaxSize()
-    ) {
-        if (state.groupedItems.isEmpty()) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "暂无历史数据",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "下拉刷新以同步数据",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                state.groupedItems.forEach { (date, dayItems) ->
-                    stickyHeader(key = date, contentType = "header") {
-                        Text(
-                            text = date,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp)
-                        )
-                    }
-                    items(
-                        items = dayItems,
-                        key = { it.id },
-                        contentType = { it.type }
-                    ) { item ->
-                        val onClick: (() -> Unit)? = if (item.type == "sleep" && item.sleepRecordId != null) {
-                            {
-                                if (item.syncState == SyncState.CONFLICT) {
-                                    resolveConflict = ResolveConflictRequest(
-                                        recordId = item.sleepRecordId,
-                                        localStart = item.sleepStartTime ?: 0L,
-                                        localEnd = item.sleepEndTime ?: 0L,
-                                        localQuality = item.sleepQuality?.name ?: "",
-                                        serverSnapshot = item.sleepServerSnapshot
-                                    )
-                                } else {
-                                    editSleep = EditSleepRequest(
-                                        recordId = item.sleepRecordId,
-                                        startTimeMs = item.sleepStartTime ?: 0L,
-                                        endTimeMs = item.sleepEndTime ?: 0L,
-                                        quality = item.sleepQuality
-                                    )
-                                }
-                            }
-                        } else {
-                            null
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = { viewModel.onRefresh() },
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            if (state.groupedItems.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "暂无历史数据",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "下拉刷新以同步数据",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    state.groupedItems.forEach { (date, dayItems) ->
+                        stickyHeader(key = date, contentType = "header") {
+                            Text(
+                                text = date,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp)
+                            )
                         }
+                        items(
+                            items = dayItems,
+                            key = { it.id },
+                            contentType = { it.type }
+                        ) { item ->
+                            val isSleep = item.type == "sleep" && item.sleepRecordId != null
+                            val onClick: (() -> Unit)? = if (isSleep) {
+                                {
+                                    if (item.syncState == SyncState.CONFLICT) {
+                                        resolveConflict = ResolveConflictRequest(
+                                            recordId = item.sleepRecordId!!,
+                                            localStart = item.sleepStartTime ?: 0L,
+                                            localEnd = item.sleepEndTime ?: 0L,
+                                            localQuality = item.sleepQuality?.name ?: "",
+                                            serverSnapshot = item.sleepServerSnapshot
+                                        )
+                                    } else {
+                                        editSleep = EditSleepRequest(
+                                            recordId = item.sleepRecordId!!,
+                                            startTimeMs = item.sleepStartTime ?: 0L,
+                                            endTimeMs = item.sleepEndTime ?: 0L,
+                                            quality = item.sleepQuality
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            }
 
-                        HistoryItemCard(
-                            type = item.type,
-                            label = item.label,
-                            detail = item.detail,
-                            syncState = item.syncState,
-                            onClick = onClick
-                        )
+                            val onSimulateRemoteUpdate: (() -> Unit)? =
+                                if (isSleep && item.syncState != SyncState.CONFLICT) {
+                                    {
+                                        scope.launch {
+                                            val updated = viewModel.simulateRemoteSleepUpdate(item.sleepRecordId!!)
+                                            if (updated == null) {
+                                                snackbarHostState.showSnackbar("服务端还没有这条睡眠记录（先同步一次再模拟）")
+                                            } else {
+                                                snackbarHostState.showSnackbar("已模拟远端修改：服务端版本 v${updated.remoteVersion}")
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    null
+                                }
+
+                            HistoryItemCard(
+                                type = item.type,
+                                label = item.label,
+                                detail = item.detail,
+                                syncState = item.syncState,
+                                onClick = onClick,
+                                onSimulateRemoteUpdate = onSimulateRemoteUpdate
+                            )
+                        }
                     }
                 }
             }
@@ -204,7 +235,8 @@ private fun HistoryItemCard(
     label: String,
     detail: String,
     syncState: SyncState,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    onSimulateRemoteUpdate: (() -> Unit)? = null
 ) {
     val typeIcon = when (type) {
         "heart_rate" -> "\u2764\uFE0F"
@@ -239,18 +271,28 @@ private fun HistoryItemCard(
                 Text(text = label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
                 Text(text = detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            // 每条记录都展示同步状态，满足“可见性”验收要求
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-            ) {
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = statusColor,
+            Column(horizontalAlignment = Alignment.End) {
+                // 每条记录都展示同步状态，满足“可见性”验收要求
+                Box(
                     modifier = Modifier
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                )
+                        .clip(RoundedCornerShape(999.dp))
+                ) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        modifier = Modifier
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+                if (onSimulateRemoteUpdate != null) {
+                    TextButton(
+                        onClick = onSimulateRemoteUpdate,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                    ) {
+                        Text(text = "模拟远端修改", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
         }
     }

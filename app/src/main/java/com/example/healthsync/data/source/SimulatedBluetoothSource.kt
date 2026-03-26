@@ -38,6 +38,15 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
     private var disconnectEnabled = true
 
     /**
+     * Manual control must win over the auto disconnect/reconnect cycle.
+     * When start()/stop() is called, we bump this token:
+     * - Any in-flight auto reconnect sequence will observe token mismatch and abort
+     * - The event loop will reset its elapsed counters (so auto disconnect timer restarts)
+     */
+    @Volatile
+    private var sessionToken: Long = 0L
+
+    /**
      * 数据事件流实现：每 2s 发一个心率，每 30s 发一个步数增量。
      * 当 connectionState 非 CONNECTED 时，暂停产生数据（模拟蓝牙断连行为）。
      * 每 60s 自动触发一次模拟断连/重连周期，以验证 UI 降级与恢复能力。
@@ -46,10 +55,20 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
         var heartRateCounter = 0L
         var stepCounter = 0L
         var totalElapsed = 0L
+        var lastSeenToken = sessionToken
 
         // 关键点：dataEvents 必须“常驻”，不能因 running=false 就结束；
         // 否则在先 collectFrom() 后 start() 的启动顺序下，会订阅即结束，导致心率不再产生。
         while (currentCoroutineContext().isActive) {
+            // Manual start/stop toggles should reset the auto-disconnect timer counters.
+            val tokenNow = sessionToken
+            if (tokenNow != lastSeenToken) {
+                lastSeenToken = tokenNow
+                heartRateCounter = 0L
+                stepCounter = 0L
+                totalElapsed = 0L
+            }
+
             if (!running || _connectionState.value != ConnectionState.CONNECTED) {
                 delay(500)
                 continue
@@ -83,7 +102,8 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
 
             // 每 60s 自动模拟一次断连/重连周期，用于验证异常场景（Milestone 4）
             if (disconnectEnabled && totalElapsed >= DISCONNECT_AFTER_MS) {
-                simulateDisconnect()
+                val tokenAtStart = sessionToken
+                simulateDisconnect(tokenAtStart)
                 totalElapsed = 0
             }
         }
@@ -93,7 +113,12 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
      * 启动数据采集。幂等实现，重复调用不抛异常。
      */
     override suspend fun start() {
-        if (running) return
+        // Bump token first so any in-flight auto cycle aborts.
+        sessionToken++
+        if (running) {
+            _connectionState.value = ConnectionState.CONNECTED
+            return
+        }
         running = true
         _connectionState.value = ConnectionState.CONNECTED
     }
@@ -102,6 +127,8 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
      * 停止数据采集。幂等实现。
      */
     override suspend fun stop() {
+        // Manual stop must win over any in-flight auto reconnect cycle.
+        sessionToken++
         running = false
         _connectionState.value = ConnectionState.DISCONNECTED
     }
@@ -110,11 +137,15 @@ class SimulatedBluetoothSource @Inject constructor() : HealthDataSource {
      * 模拟蓝牙断连：切换为 DISCONNECTED，延迟后切为 RECONNECTING，再延迟后恢复 CONNECTED。
      * 用于验证 UI 在设备断连时的降级展示与自动恢复能力（Milestone 4）。
      */
-    private suspend fun simulateDisconnect() {
+    private suspend fun simulateDisconnect(tokenAtStart: Long) {
         _connectionState.value = ConnectionState.DISCONNECTED
         delay(DISCONNECT_DURATION_MS / 2)
+        // If manual start/stop happened, abort the auto-reconnect state transitions.
+        if (sessionToken != tokenAtStart || !running) return
+
         _connectionState.value = ConnectionState.RECONNECTING
         delay(DISCONNECT_DURATION_MS / 2)
+        if (sessionToken != tokenAtStart || !running) return
         _connectionState.value = ConnectionState.CONNECTED
     }
 }
